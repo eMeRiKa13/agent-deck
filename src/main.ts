@@ -9,5 +9,6 @@ import '@fontsource/open-sans/latin-600.css'
 import '@fontsource/open-sans/latin-700.css'
 import '@/assets/css/tailwind.css'
 import App from '@/App.vue'
+import { i18n } from '@/i18n'
 
-createApp(App).mount('#app')
+createApp(App).use(i18n).mount('#app')

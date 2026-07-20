@@ -11,7 +11,14 @@ Tableau de bord macOS en lecture seule pour suivre les sessions et l’utilisati
 - actualisation automatique des données locales ;
 - interface tactile optimisée pour un écran ultralarge 2560 × 720 ;
 - mise en page responsive avec détail de session dans un panneau latéral sur les formats compacts ;
+- interface disponible en français et en anglais ;
 - application strictement en lecture seule : aucune création, reprise ou modification de session.
+
+## Langues
+
+Au premier lancement, Agent Deck utilise le français lorsque la langue système commence par `fr`, et l’anglais dans tous les autres cas. Le sélecteur `FR` / `EN` de la barre supérieure change immédiatement tous les textes d’interface, les dates et les nombres. Le choix manuel est mémorisé localement et prévaut aux lancements suivants.
+
+Les titres et messages des conversations réelles restent dans leur langue d’origine. Seuls les libellés créés par Agent Deck sont traduits. Les données de démonstration, utilisées par `pnpm dev` dans un navigateur, disposent de catalogues français et anglais.
 
 ## Sources de données
 
@@ -28,7 +35,7 @@ Les bases sont ouvertes en lecture seule. Les jetons restent côté Rust et ne s
 ## Stack
 
 - Tauri 2 et Rust
-- Vue 3 et TypeScript
+- Vue 3, TypeScript et Vue I18n 11
 - Vite 8 et Tailwind CSS 4
 - VueUse, Lucide et Vitest
 

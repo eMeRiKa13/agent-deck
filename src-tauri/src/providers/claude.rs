@@ -7,17 +7,17 @@ use std::{
 };
 
 use chrono::DateTime;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use walkdir::WalkDir;
 
 use crate::{
     domain::{
         AgentSession, EventKind, ProviderId, ProviderQuota, ProviderSnapshot, QuotaWindow,
-        SessionEvent, SessionStatus,
+        SessionEvent, SessionStatus, UiText, UsageCost,
     },
     utils::{
-        clamp_percent, elapsed_label, event_time, home_dir, normalize_epoch_ms, project_name,
-        relative_time, reset_label_from_iso, truncate,
+        clamp_percent, event_timestamp_ms, home_dir, normalize_epoch_ms, project_name,
+        reset_at_ms_from_iso, truncate,
     },
 };
 
@@ -250,7 +250,11 @@ fn parse_session(
                 if first_user.is_empty() {
                     first_user = text.clone();
                 }
-                Some((EventKind::User, "Vous", text))
+                Some((
+                    EventKind::User,
+                    UiText::message("generated.you"),
+                    UiText::from(text),
+                ))
             }
             "assistant" => {
                 if let Some(value) = message["model"].as_str() {
@@ -279,14 +283,20 @@ fn parse_session(
                 }
                 if text.is_empty() {
                     tool_name(&message["content"]).map(|name| {
+                        let mut params = Map::new();
+                        params.insert("name".to_string(), Value::String(name));
                         (
                             EventKind::Tool,
-                            "Outil Claude",
-                            format!("Utilisation de {name}"),
+                            UiText::message("generated.claudeTool"),
+                            UiText::message_with("generated.toolUsage", params),
                         )
                     })
                 } else {
-                    Some((EventKind::Assistant, "Claude", text))
+                    Some((
+                        EventKind::Assistant,
+                        UiText::from("Claude"),
+                        UiText::from(text),
+                    ))
                 }
             }
             _ => None,
@@ -301,9 +311,12 @@ fn parse_session(
             events.push_back(SessionEvent {
                 id: format!("claude-event-{index}"),
                 kind,
-                title: title.to_string(),
-                body: truncate(&body, 240),
-                time: event_time(timestamp, latest_timestamp),
+                title,
+                body: match body {
+                    UiText::Raw(value) => UiText::from(truncate(&value, 240)),
+                    message => message,
+                },
+                timestamp_ms: event_timestamp_ms(timestamp, latest_timestamp),
             });
         }
     }
@@ -337,14 +350,11 @@ fn parse_session(
     Ok(AgentSession {
         id: format!("claude:{session_id}"),
         provider: ProviderId::Claude,
-        title: truncate(
-            if title_source.is_empty() {
-                "Conversation Claude"
-            } else {
-                title_source
-            },
-            74,
-        ),
+        title: if title_source.is_empty() {
+            UiText::message("generated.claudeConversation")
+        } else {
+            UiText::from(truncate(title_source, 74))
+        },
         project: project_name(&cwd),
         branch: if branch.is_empty() {
             "—".to_string()
@@ -357,12 +367,15 @@ fn parse_session(
             model
         },
         status,
-        elapsed: elapsed_label(first_timestamp, latest_timestamp),
-        updated_at: relative_time(modified_ms),
-        token_count: usages.values().sum(),
-        summary: truncate(summary_source, 180),
-        events: events.into_iter().collect(),
+        started_at_ms: normalize_epoch_ms(first_timestamp),
         updated_at_ms: normalize_epoch_ms(modified_ms),
+        token_count: usages.values().sum(),
+        summary: if summary_source.is_empty() {
+            UiText::message("generated.claudeConversation")
+        } else {
+            UiText::from(truncate(summary_source, 180))
+        },
+        events: events.into_iter().collect(),
     })
 }
 
@@ -450,17 +463,19 @@ fn load_desktop_quota() -> Result<ProviderQuota, String> {
     if let Some(percent) = usage["fh"].as_f64() {
         windows.push(QuotaWindow {
             id: "claude-session-local".to_string(),
-            label: "5 heures".to_string(),
+            label: UiText::message("quota.fiveHours"),
             used_percent: clamp_percent(percent),
-            reset_label: "heure de réinitialisation non stockée localement".to_string(),
+            reset_at_ms: None,
+            reset_text: Some(UiText::message("quota.resetHourNotStored")),
         });
     }
     if let Some(percent) = usage["sd"].as_f64() {
         windows.push(QuotaWindow {
             id: "claude-week-local".to_string(),
-            label: "Hebdomadaire".to_string(),
+            label: UiText::message("quota.weekly"),
             used_percent: clamp_percent(percent),
-            reset_label: "jour de réinitialisation non stocké localement".to_string(),
+            reset_at_ms: None,
+            reset_text: Some(UiText::message("quota.resetDayNotStored")),
         });
     }
     if windows.is_empty() {
@@ -470,10 +485,11 @@ fn load_desktop_quota() -> Result<ProviderQuota, String> {
     Ok(ProviderQuota {
         provider: ProviderId::Claude,
         plan: "Claude App".to_string(),
-        account: "Claude Desktop".to_string(),
+        account: UiText::from("Claude Desktop"),
         windows,
-        cost_label: (measured_at > 0)
-            .then(|| format!("mesure locale, {}", relative_time(measured_at))),
+        cost: (measured_at > 0).then_some(UsageCost::LocalMeasurement {
+            measured_at_ms: normalize_epoch_ms(measured_at),
+        }),
     })
 }
 
@@ -521,18 +537,19 @@ async fn load_credentials() -> Result<Credentials, String> {
 fn parse_quota(value: &Value, plan: String) -> ProviderQuota {
     let mut windows = Vec::new();
     for (id, label, key) in [
-        ("claude-session", "5 heures", "five_hour"),
-        ("claude-week", "Hebdomadaire", "seven_day"),
-        ("claude-sonnet", "Sonnet hebdomadaire", "seven_day_sonnet"),
-        ("claude-opus", "Opus hebdomadaire", "seven_day_opus"),
+        ("claude-session", "quota.fiveHours", "five_hour"),
+        ("claude-week", "quota.weekly", "seven_day"),
+        ("claude-sonnet", "quota.sonnetWeekly", "seven_day_sonnet"),
+        ("claude-opus", "quota.opusWeekly", "seven_day_opus"),
     ] {
         let window = &value[key];
         if window.is_object() {
             windows.push(QuotaWindow {
                 id: id.to_string(),
-                label: label.to_string(),
+                label: UiText::message(label),
                 used_percent: clamp_percent(window["utilization"].as_f64().unwrap_or_default()),
-                reset_label: reset_label_from_iso(window["resets_at"].as_str()),
+                reset_at_ms: reset_at_ms_from_iso(window["resets_at"].as_str()),
+                reset_text: Some(UiText::message("quota.resetUnknown")),
             });
         }
     }
@@ -545,26 +562,29 @@ fn parse_quota(value: &Value, plan: String) -> ProviderQuota {
         {
             let name = limit["scope"]["model"]["display_name"]
                 .as_str()
-                .unwrap_or("Modèle");
+                .unwrap_or("Model");
+            let mut params = Map::new();
+            params.insert("model".to_string(), Value::String(name.to_string()));
             windows.push(QuotaWindow {
                 id: format!("claude-scoped-{index}"),
-                label: format!("{name} hebdomadaire"),
+                label: UiText::message_with("quota.modelWeekly", params),
                 used_percent: clamp_percent(limit["percent"].as_f64().unwrap_or_default()),
-                reset_label: reset_label_from_iso(limit["resets_at"].as_str()),
+                reset_at_ms: reset_at_ms_from_iso(limit["resets_at"].as_str()),
+                reset_text: Some(UiText::message("quota.resetUnknown")),
             });
         }
     }
     let extra = &value["extra_usage"];
-    let cost_label = extra["used_credits"].as_f64().map(|used| {
-        let currency = extra["currency"].as_str().unwrap_or("USD");
-        format!("{used:.2} {currency} d’usage supplémentaire")
+    let cost = extra["used_credits"].as_f64().map(|value| UsageCost::ExtraUsage {
+        value,
+        currency: extra["currency"].as_str().unwrap_or("USD").to_string(),
     });
     ProviderQuota {
         provider: ProviderId::Claude,
         plan,
-        account: "Compte Claude".to_string(),
+        account: UiText::message("generated.claudeAccount"),
         windows,
-        cost_label,
+        cost,
     }
 }
 

@@ -4,9 +4,12 @@ import {
   BarChart3Icon,
   LayoutDashboardIcon,
 } from '@lucide/vue'
+import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import agentDeckMark from '@/assets/branding/agent-deck-mark.png'
 import ProviderMark from '@/components/ProviderMark.vue'
 import type { ProviderDefinition, ProviderId } from '@/domain/dashboard'
+import { translateUiText } from '@/i18n/format'
 
 defineProps<{
   providers: ProviderDefinition[]
@@ -18,11 +21,13 @@ const emit = defineEmits<{
   selectProvider: [provider: ProviderId | 'all']
 }>()
 
-const navigation = [
-  { label: 'Vue d’ensemble', icon: LayoutDashboardIcon, active: true },
-  { label: 'Activité', icon: ActivityIcon, active: false },
-  { label: 'Utilisation', icon: BarChart3Icon, active: false },
-]
+const { t } = useI18n({ useScope: 'global' })
+
+const navigation = computed(() => [
+  { id: 'overview', label: t('navigation.overview'), icon: LayoutDashboardIcon, active: true },
+  { id: 'activity', label: t('navigation.activity'), icon: ActivityIcon, active: false },
+  { id: 'usage', label: t('navigation.usage'), icon: BarChart3Icon, active: false },
+])
 
 const providerStack: ProviderId[] = ['codex', 'claude', 'cursor']
 </script>
@@ -35,20 +40,20 @@ const providerStack: ProviderId[] = ['codex', 'claude', 'cursor']
       <span class="app-sidebar__brand-mark" aria-hidden="true">
         <img :src="agentDeckMark" alt="" draggable="false" />
       </span>
-      <span>Agent Deck</span>
+      <span>{{ t('app.name') }}</span>
     </div>
 
-    <nav class="app-sidebar__nav" aria-label="Navigation principale">
+    <nav class="app-sidebar__nav" :aria-label="t('navigation.aria')">
       <button
         v-for="item in navigation"
-        :key="item.label"
+        :key="item.id"
         type="button"
         class="sidebar-nav-item"
         :class="{ 'sidebar-nav-item--active': item.active }"
         :disabled="!item.active"
         :aria-current="item.active ? 'page' : undefined"
-        :data-nav-item="item.label"
-        :title="item.active ? undefined : `${item.label} indisponible`"
+        :data-nav-item="item.id"
+        :title="item.active ? undefined : t('navigation.unavailable', { label: item.label })"
       >
         <component :is="item.icon" :size="17" />
         <span>{{ item.label }}</span>
@@ -57,7 +62,7 @@ const providerStack: ProviderId[] = ['codex', 'claude', 'cursor']
     </nav>
 
     <div class="app-sidebar__section">
-      <div class="app-sidebar__section-label">Fournisseurs</div>
+      <div class="app-sidebar__section-label">{{ t('navigation.providers') }}</div>
       <button
         type="button"
         class="provider-nav-item"
@@ -73,7 +78,7 @@ const providerStack: ProviderId[] = ['codex', 'claude', 'cursor']
             class="provider-stack__logo"
           />
         </span>
-        <span>Tous les agents</span>
+        <span>{{ t('navigation.allAgents') }}</span>
       </button>
 
       <button
@@ -82,7 +87,7 @@ const providerStack: ProviderId[] = ['codex', 'claude', 'cursor']
         type="button"
         class="provider-nav-item"
         :class="{ 'provider-nav-item--active': activeProvider === provider.id }"
-        :title="provider.error ?? `${provider.name} connecté`"
+        :title="provider.error ? translateUiText(provider.error, t) : t('navigation.connected', { provider: provider.name })"
         @click="emit('selectProvider', provider.id)"
       >
         <ProviderMark :provider="provider.id" size="sm" />
@@ -100,7 +105,7 @@ const providerStack: ProviderId[] = ['codex', 'claude', 'cursor']
     <div class="app-sidebar__footer">
       <div class="local-indicator">
         <span class="local-indicator__dot" />
-        Données locales uniquement
+        {{ t('navigation.localOnly') }}
       </div>
     </div>
   </aside>

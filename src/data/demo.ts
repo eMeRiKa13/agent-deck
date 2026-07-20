@@ -1,230 +1,99 @@
-import type { DashboardSnapshot, ProviderAdapter } from '@/domain/dashboard'
+import type { DashboardSnapshot, ProviderAdapter, UiMessage } from '@/domain/dashboard'
 
-const snapshot: DashboardSnapshot = {
-  refreshedAt: 'à l’instant',
-  providers: [
-    { id: 'codex', name: 'Codex', shortName: 'CX', accent: '#111111', connected: true },
-    { id: 'claude', name: 'Claude', shortName: 'CL', accent: '#d97757', connected: true },
-    { id: 'cursor', name: 'Cursor', shortName: 'CU', accent: '#6d5dfc', connected: true },
-  ],
-  sessions: [
-    {
-      id: 'codex-dashboard',
-      provider: 'codex',
-      title: 'Construire le tableau de bord agents',
-      project: 'agent-deck',
-      branch: 'main',
-      model: 'GPT-5.6 Sol',
-      status: 'working',
-      elapsed: '12 min',
-      updatedAt: 'maintenant',
-      tokenCount: 18340,
-      summary: 'Création de l’interface ultralarge et préparation des adaptateurs locaux.',
-      events: [
-        {
-          id: 'c1',
-          kind: 'user',
-          title: 'Vous',
-          body: 'Construis le prototype 2560×720 et garde les trois fournisseurs visibles.',
-          time: '14:08',
-        },
-        {
-          id: 'c2',
-          kind: 'assistant',
-          title: 'Plan établi',
-          body: 'Je pars sur trois zones : sessions, conversation active et quotas, avec une densité proche de Codex.',
-          time: '14:09',
-        },
-        {
-          id: 'c3',
-          kind: 'tool',
-          title: 'Analyse du projet de référence',
-          body: 'Lecture de la stack Tauri, Vue, Vite et Tailwind terminée.',
-          time: '14:12',
-        },
-        {
-          id: 'c4',
-          kind: 'system',
-          title: 'En cours',
-          body: 'Assemblage des composants et vérification visuelle du prototype.',
-          time: '14:20',
-        },
-      ],
-    },
-    {
-      id: 'claude-sync',
-      provider: 'claude',
-      title: 'Revoir le moteur de synchronisation',
-      project: 'liblio',
-      branch: 'feat/sync-health',
-      model: 'Claude Opus 4.7',
-      status: 'waiting',
-      elapsed: '31 min',
-      updatedAt: 'il y a 2 min',
-      tokenCount: 42110,
-      summary: 'La revue est terminée et Claude attend une décision sur le stockage local.',
-      events: [
-        {
-          id: 'cl1',
-          kind: 'user',
-          title: 'Vous',
-          body: 'Analyse le flux de synchronisation et signale les risques de perte de données.',
-          time: '13:46',
-        },
-        {
-          id: 'cl2',
-          kind: 'tool',
-          title: '34 fichiers analysés',
-          body: 'Le moteur, les probes et les tests d’intégrité ont été parcourus.',
-          time: '13:55',
-        },
-        {
-          id: 'cl3',
-          kind: 'assistant',
-          title: 'Décision nécessaire',
-          body: 'Deux stratégies sont sûres. Choisissez si le cache doit rester strictement local ou suivre le dossier synchronisé.',
-          time: '14:18',
-        },
-      ],
-    },
-    {
-      id: 'cursor-index',
-      provider: 'cursor',
-      title: 'Corriger l’indexation des conversations',
-      project: 'atlas-web',
-      branch: 'fix/chat-index',
-      model: 'Auto',
-      status: 'attention',
-      elapsed: '8 min',
-      updatedAt: 'il y a 4 min',
-      tokenCount: 12860,
-      summary: 'Cursor est bloqué par une migration SQLite et demande une confirmation.',
-      events: [
-        {
-          id: 'cu1',
-          kind: 'user',
-          title: 'Vous',
-          body: 'Répare la recherche dans l’historique sans casser les anciennes conversations.',
-          time: '14:14',
-        },
-        {
-          id: 'cu2',
-          kind: 'tool',
-          title: 'Migration préparée',
-          body: 'Une copie de sauvegarde est prête avant la modification de l’index.',
-          time: '14:19',
-        },
-        {
-          id: 'cu3',
-          kind: 'system',
-          title: 'Autorisation demandée',
-          body: 'La migration modifie la structure de la base locale. Validation requise.',
-          time: '14:20',
-        },
-      ],
-    },
-    {
-      id: 'codex-review',
-      provider: 'codex',
-      title: 'Préparer la revue de la pull request',
-      project: 'platform-api',
-      branch: 'chore/rate-limit',
-      model: 'GPT-5.6 Terra',
-      status: 'completed',
-      elapsed: '24 min',
-      updatedAt: 'il y a 18 min',
-      tokenCount: 29440,
-      summary: 'Revue terminée, avec trois observations et aucun problème bloquant.',
-      events: [
-        {
-          id: 'cr1',
-          kind: 'assistant',
-          title: 'Revue terminée',
-          body: 'Trois observations mineures ont été relevées. Aucun défaut bloquant détecté.',
-          time: '14:02',
-        },
-      ],
-    },
-    {
-      id: 'claude-tests',
-      provider: 'claude',
-      title: 'Stabiliser les tests end-to-end',
-      project: 'commerce',
-      branch: 'test/checkout',
-      model: 'Claude Sonnet 4.6',
-      status: 'working',
-      elapsed: '6 min',
-      updatedAt: 'il y a 1 min',
-      tokenCount: 9480,
-      summary: 'Nouvelle exécution des scénarios checkout après correction des sélecteurs.',
-      events: [
-        {
-          id: 'ct1',
-          kind: 'tool',
-          title: 'Tests relancés',
-          body: '17 scénarios sur 24 sont déjà passés.',
-          time: '14:21',
-        },
-      ],
-    },
-    {
-      id: 'cursor-copy',
-      provider: 'cursor',
-      title: 'Uniformiser les textes d’onboarding',
-      project: 'mobile-app',
-      branch: 'copy/onboarding',
-      model: 'Composer 2',
-      status: 'completed',
-      elapsed: '19 min',
-      updatedAt: 'il y a 46 min',
-      tokenCount: 16320,
-      summary: 'Les textes ont été simplifiés et alignés sur le nouveau ton produit.',
-      events: [
-        {
-          id: 'cc1',
-          kind: 'assistant',
-          title: 'Copie mise à jour',
-          body: 'Les douze écrans utilisent désormais les mêmes verbes d’action et la même terminologie.',
-          time: '13:36',
-        },
-      ],
-    },
-  ],
-  quotas: [
-    {
-      provider: 'codex',
-      plan: 'Pro',
-      account: 'Compte principal',
-      windows: [
-        { id: 'codex-global', label: 'Limite globale', usedPercent: 39, resetLabel: 'vendredi à 09:00' },
-      ],
-      costLabel: '183 k tokens aujourd’hui',
-    },
-    {
-      provider: 'claude',
-      plan: 'Max 20×',
-      account: 'Compte principal',
-      windows: [
-        { id: 'claude-session', label: '5 heures', usedPercent: 74, resetLabel: 'réinitialisation dans 48 min' },
-        { id: 'claude-week', label: 'Hebdomadaire', usedPercent: 46, resetLabel: 'dimanche à 18:00' },
-      ],
-      costLabel: '256 k tokens aujourd’hui',
-    },
-    {
-      provider: 'cursor',
-      plan: 'Pro',
-      account: 'Workspace personnel',
-      windows: [
-        { id: 'cursor-plan', label: 'Inclus au forfait', usedPercent: 57, resetLabel: 'nouveau cycle dans 12 jours' },
-        { id: 'cursor-auto', label: 'Auto + Composer', usedPercent: 31, resetLabel: '89 requêtes restantes' },
-      ],
-      costLabel: '8,42 € de consommation',
-    },
-  ],
+const ui = (key: string, params?: UiMessage['params']): UiMessage => ({ key, ...(params ? { params } : {}) })
+const minute = 60_000
+const hour = 60 * minute
+const day = 24 * hour
+
+function createSnapshot(): DashboardSnapshot {
+  const now = Date.now()
+
+  return {
+    refreshedAtMs: now,
+    providers: [
+      { id: 'codex', name: 'Codex', shortName: 'CX', accent: '#111111', connected: true },
+      { id: 'claude', name: 'Claude', shortName: 'CL', accent: '#d97757', connected: true },
+      { id: 'cursor', name: 'Cursor', shortName: 'CU', accent: '#6d5dfc', connected: true },
+    ],
+    sessions: [
+      {
+        id: 'codex-dashboard', provider: 'codex', project: 'agent-deck', branch: 'main', model: 'GPT-5.6 Sol',
+        title: ui('demo.codexDashboard.title'), summary: ui('demo.codexDashboard.summary'), status: 'working',
+        startedAtMs: now - 12 * minute, updatedAtMs: now, tokenCount: 18_340,
+        events: [
+          { id: 'c1', kind: 'user', title: ui('demo.codexDashboard.userTitle'), body: ui('demo.codexDashboard.userBody'), timestampMs: now - 12 * minute },
+          { id: 'c2', kind: 'assistant', title: ui('demo.codexDashboard.planTitle'), body: ui('demo.codexDashboard.planBody'), timestampMs: now - 11 * minute },
+          { id: 'c3', kind: 'tool', title: ui('demo.codexDashboard.toolTitle'), body: ui('demo.codexDashboard.toolBody'), timestampMs: now - 8 * minute },
+          { id: 'c4', kind: 'system', title: ui('demo.codexDashboard.systemTitle'), body: ui('demo.codexDashboard.systemBody'), timestampMs: now },
+        ],
+      },
+      {
+        id: 'claude-sync', provider: 'claude', project: 'liblio', branch: 'feat/sync-health', model: 'Claude Opus 4.7',
+        title: ui('demo.claudeSync.title'), summary: ui('demo.claudeSync.summary'), status: 'waiting',
+        startedAtMs: now - 33 * minute, updatedAtMs: now - 2 * minute, tokenCount: 42_110,
+        events: [
+          { id: 'cl1', kind: 'user', title: ui('demo.claudeSync.userTitle'), body: ui('demo.claudeSync.userBody'), timestampMs: now - 33 * minute },
+          { id: 'cl2', kind: 'tool', title: ui('demo.claudeSync.toolTitle'), body: ui('demo.claudeSync.toolBody'), timestampMs: now - 24 * minute },
+          { id: 'cl3', kind: 'assistant', title: ui('demo.claudeSync.answerTitle'), body: ui('demo.claudeSync.answerBody'), timestampMs: now - 2 * minute },
+        ],
+      },
+      {
+        id: 'cursor-index', provider: 'cursor', project: 'atlas-web', branch: 'fix/chat-index', model: 'Auto',
+        title: ui('demo.cursorIndex.title'), summary: ui('demo.cursorIndex.summary'), status: 'attention',
+        startedAtMs: now - 12 * minute, updatedAtMs: now - 4 * minute, tokenCount: 12_860,
+        events: [
+          { id: 'cu1', kind: 'user', title: ui('demo.cursorIndex.userTitle'), body: ui('demo.cursorIndex.userBody'), timestampMs: now - 10 * minute },
+          { id: 'cu2', kind: 'tool', title: ui('demo.cursorIndex.toolTitle'), body: ui('demo.cursorIndex.toolBody'), timestampMs: now - 5 * minute },
+          { id: 'cu3', kind: 'system', title: ui('demo.cursorIndex.systemTitle'), body: ui('demo.cursorIndex.systemBody'), timestampMs: now - 4 * minute },
+        ],
+      },
+      {
+        id: 'codex-review', provider: 'codex', project: 'platform-api', branch: 'chore/rate-limit', model: 'GPT-5.6 Terra',
+        title: ui('demo.codexReview.title'), summary: ui('demo.codexReview.summary'), status: 'completed',
+        startedAtMs: now - 42 * minute, updatedAtMs: now - 18 * minute, tokenCount: 29_440,
+        events: [{ id: 'cr1', kind: 'assistant', title: ui('demo.codexReview.eventTitle'), body: ui('demo.codexReview.eventBody'), timestampMs: now - 18 * minute }],
+      },
+      {
+        id: 'claude-tests', provider: 'claude', project: 'commerce', branch: 'test/checkout', model: 'Claude Sonnet 4.6',
+        title: ui('demo.claudeTests.title'), summary: ui('demo.claudeTests.summary'), status: 'working',
+        startedAtMs: now - 7 * minute, updatedAtMs: now - minute, tokenCount: 9_480,
+        events: [{ id: 'ct1', kind: 'tool', title: ui('demo.claudeTests.eventTitle'), body: ui('demo.claudeTests.eventBody'), timestampMs: now - minute }],
+      },
+      {
+        id: 'cursor-copy', provider: 'cursor', project: 'mobile-app', branch: 'copy/onboarding', model: 'Composer 2',
+        title: ui('demo.cursorCopy.title'), summary: ui('demo.cursorCopy.summary'), status: 'completed',
+        startedAtMs: now - 65 * minute, updatedAtMs: now - 46 * minute, tokenCount: 16_320,
+        events: [{ id: 'cc1', kind: 'assistant', title: ui('demo.cursorCopy.eventTitle'), body: ui('demo.cursorCopy.eventBody'), timestampMs: now - 46 * minute }],
+      },
+    ],
+    quotas: [
+      {
+        provider: 'codex', plan: 'Pro', account: ui('generated.primaryAccount'),
+        windows: [{ id: 'codex-global', label: ui('quota.global'), usedPercent: 39, resetAtMs: now + 4 * day }],
+        cost: { kind: 'tokensToday', value: 183 },
+      },
+      {
+        provider: 'claude', plan: 'Max 20×', account: ui('generated.primaryAccount'),
+        windows: [
+          { id: 'claude-session', label: ui('quota.fiveHours'), usedPercent: 74, resetAtMs: now + 48 * minute },
+          { id: 'claude-week', label: ui('quota.weekly'), usedPercent: 46, resetAtMs: now + 5 * day },
+        ],
+        cost: { kind: 'tokensToday', value: 256 },
+      },
+      {
+        provider: 'cursor', plan: 'Pro', account: ui('generated.personalWorkspace'),
+        windows: [
+          { id: 'cursor-plan', label: ui('quota.included'), usedPercent: 57, resetAtMs: now + 12 * day },
+          { id: 'cursor-auto', label: ui('quota.autoModel'), usedPercent: 31, resetText: ui('quota.billingCycle') },
+        ],
+        cost: { kind: 'consumption', value: 8.42 },
+      },
+    ],
+  }
 }
 
 export class DemoProviderAdapter implements ProviderAdapter {
   async getSnapshot(): Promise<DashboardSnapshot> {
-    return structuredClone(snapshot)
+    return createSnapshot()
   }
 }

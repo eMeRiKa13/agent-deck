@@ -1,12 +1,19 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { MoonIcon, RefreshCwIcon, SunIcon, WifiIcon } from '@lucide/vue'
 import { onKeyStroke, useColorMode, useMediaQuery } from '@vueuse/core'
 import AppSidebar from '@/components/AppSidebar.vue'
+import LocaleSelector from '@/components/LocaleSelector.vue'
 import SessionDetail from '@/components/SessionDetail.vue'
 import SessionList from '@/components/SessionList.vue'
 import UsagePanel from '@/components/UsagePanel.vue'
 import { useDashboard } from '@/composables/useDashboard'
+import type { SupportedLocale } from '@/i18n'
+import { formatRelativeTime } from '@/i18n/format'
+
+const { t, locale } = useI18n({ useScope: 'global' })
+const currentLocale = computed(() => locale.value as SupportedLocale)
 
 const mode = useColorMode({ emitAuto: true })
 const {
@@ -62,20 +69,24 @@ function handleSelectSession(id: string) {
       <header data-tauri-drag-region class="dashboard-topbar">
         <div class="dashboard-topbar__title">
           <div>
-            <h1>Centre de contrôle</h1>
-            <span>{{ activeCount }} agents actifs · {{ attentionCount }} actions requises</span>
+            <h1>{{ t('topbar.title') }}</h1>
+            <span>
+              {{ t('topbar.activeAgents', { count: activeCount }, activeCount) }} ·
+              {{ t('topbar.requiredActions', { count: attentionCount }, attentionCount) }}
+            </span>
           </div>
-          <span class="live-badge"><WifiIcon :size="12" /> Actualisation auto · {{ pollingIntervalSeconds }} s</span>
+          <span class="live-badge"><WifiIcon :size="12" /> {{ t('topbar.autoRefresh', { seconds: pollingIntervalSeconds }) }}</span>
         </div>
         <div class="dashboard-topbar__actions">
-          <span class="last-refresh">Mis à jour {{ snapshot.refreshedAt }}</span>
-          <button type="button" :class="{ 'is-spinning': refreshing }" aria-label="Rafraîchir" @click="refresh">
+          <span class="last-refresh">{{ t('topbar.updated', { time: formatRelativeTime(snapshot.refreshedAtMs, currentLocale, t) }) }}</span>
+          <button type="button" :class="{ 'is-spinning': refreshing }" :aria-label="t('topbar.refresh')" @click="refresh">
             <RefreshCwIcon :size="17" />
           </button>
-          <button type="button" aria-label="Changer de thème" @click="toggleTheme">
+          <button type="button" :aria-label="t('topbar.theme')" @click="toggleTheme">
             <SunIcon v-if="isDark" :size="17" />
             <MoonIcon v-else :size="17" />
           </button>
+          <LocaleSelector />
         </div>
       </header>
 
@@ -90,7 +101,7 @@ function handleSelectSession(id: string) {
           v-if="isCompactDetail && isSessionDetailOpen"
           type="button"
           class="conversation-backdrop"
-          aria-label="Fermer le détail de la session"
+          :aria-label="t('detail.close')"
           @click="isSessionDetailOpen = false"
         />
         <SessionDetail
@@ -107,11 +118,11 @@ function handleSelectSession(id: string) {
   </div>
 
   <div v-else-if="error" class="dashboard-loading">
-    Impossible de lire les données locales : {{ error }}
+    {{ t('app.loadError', { error }) }}
   </div>
 
   <div v-else class="dashboard-loading">
     <span />
-    Chargement des agents…
+    {{ t('app.loading') }}
   </div>
 </template>

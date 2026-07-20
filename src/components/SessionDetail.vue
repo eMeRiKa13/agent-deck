@@ -8,9 +8,16 @@ import {
   TerminalSquareIcon,
   XIcon,
 } from '@lucide/vue'
+import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import ProviderMark from '@/components/ProviderMark.vue'
 import StatusPill from '@/components/StatusPill.vue'
 import type { AgentSession, SessionEvent } from '@/domain/dashboard'
+import type { SupportedLocale } from '@/i18n'
+import { formatDuration, formatEventTime, translateUiText } from '@/i18n/format'
+
+const { t, n, locale } = useI18n({ useScope: 'global' })
+const currentLocale = computed(() => locale.value as SupportedLocale)
 
 const { compact = false } = defineProps<{
   session: AgentSession
@@ -32,7 +39,7 @@ const eventIcons: Record<SessionEvent['kind'], typeof CheckIcon> = {
 <template>
   <section
     class="conversation-panel"
-    aria-label="Conversation sélectionnée"
+    :aria-label="t('detail.aria')"
     :role="compact ? 'dialog' : undefined"
     :aria-modal="compact ? 'true' : undefined"
   >
@@ -41,11 +48,11 @@ const eventIcons: Record<SessionEvent['kind'], typeof CheckIcon> = {
         <ProviderMark :provider="session.provider" size="lg" />
         <div>
           <div class="conversation-header__title-row">
-            <h1>{{ session.title }}</h1>
+            <h1>{{ translateUiText(session.title, t) }}</h1>
             <StatusPill :status="session.status" />
           </div>
           <div class="conversation-header__meta">
-            <span>{{ session.project }}</span>
+            <span>{{ translateUiText(session.project, t) }}</span>
             <span><GitBranchIcon :size="13" />{{ session.branch }}</span>
             <span>{{ session.model }}</span>
           </div>
@@ -55,7 +62,7 @@ const eventIcons: Record<SessionEvent['kind'], typeof CheckIcon> = {
         v-if="compact"
         type="button"
         class="conversation-panel__close"
-        aria-label="Fermer le détail"
+        :aria-label="t('detail.close')"
         @click="emit('close')"
       >
         <XIcon :size="21" />
@@ -64,12 +71,12 @@ const eventIcons: Record<SessionEvent['kind'], typeof CheckIcon> = {
 
     <div class="conversation-body">
       <div class="conversation-summary">
-        <span class="conversation-summary__label">Résumé</span>
-        <p>{{ session.summary }}</p>
+        <span class="conversation-summary__label">{{ t('detail.summary') }}</span>
+        <p>{{ translateUiText(session.summary, t) }}</p>
         <div class="conversation-summary__stats">
-          <span><Clock3Icon :size="13" /> {{ session.elapsed }}</span>
-          <span>{{ session.tokenCount.toLocaleString('fr-FR') }} tokens</span>
-          <span>{{ session.events.length }} événements</span>
+          <span><Clock3Icon :size="13" /> {{ formatDuration(session.startedAtMs, session.updatedAtMs, t) }}</span>
+          <span>{{ t('detail.tokens', { count: n(session.tokenCount, 'integer') }) }}</span>
+          <span>{{ t('detail.events', { count: session.events.length }, session.events.length) }}</span>
         </div>
       </div>
 
@@ -81,10 +88,10 @@ const eventIcons: Record<SessionEvent['kind'], typeof CheckIcon> = {
           </div>
           <div class="event-item__content">
             <div class="event-item__heading">
-              <strong>{{ event.title }}</strong>
-              <time>{{ event.time }}</time>
+              <strong>{{ translateUiText(event.title, t) }}</strong>
+              <time :datetime="new Date(event.timestampMs).toISOString()">{{ formatEventTime(event.timestampMs, currentLocale) }}</time>
             </div>
-            <p>{{ event.body }}</p>
+            <p>{{ translateUiText(event.body, t) }}</p>
           </div>
         </article>
       </div>
@@ -96,8 +103,8 @@ const eventIcons: Record<SessionEvent['kind'], typeof CheckIcon> = {
           <span />
         </span>
         <div>
-          <strong>{{ session.status === 'working' ? 'Agent au travail' : 'Session en attente' }}</strong>
-          <span>{{ session.status === 'working' ? 'Les événements apparaissent ici en direct' : 'Une action de votre part peut être nécessaire' }}</span>
+          <strong>{{ t(session.status === 'working' ? 'detail.workingTitle' : 'detail.waitingTitle') }}</strong>
+          <span>{{ t(session.status === 'working' ? 'detail.workingBody' : 'detail.waitingBody') }}</span>
         </div>
       </div>
     </footer>

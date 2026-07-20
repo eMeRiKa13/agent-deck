@@ -1,0 +1,72 @@
+import type { ComposerTranslation } from 'vue-i18n'
+import type { SupportedLocale } from '@/i18n'
+import type { UiText, UsageCost } from '@/domain/dashboard'
+
+export function localeTag(locale: SupportedLocale) {
+  return locale === 'fr' ? 'fr-FR' : 'en-US'
+}
+
+export function translateUiText(value: UiText, t: ComposerTranslation): string {
+  return typeof value === 'string' ? value : t(value.key, value.params ?? {})
+}
+
+export function formatRelativeTime(timestampMs: number, _locale: SupportedLocale, t: ComposerTranslation): string {
+  const elapsed = Math.max(0, Math.floor((Date.now() - timestampMs) / 1_000))
+  if (elapsed <= 44) return t('time.now')
+  if (elapsed <= 89) return t('time.minuteAgo')
+  if (elapsed <= 3_599) return t('time.minutesAgo', { count: Math.floor(elapsed / 60) })
+  if (elapsed <= 86_399) return t('time.hoursAgo', { count: Math.floor(elapsed / 3_600) })
+  return t('time.daysAgo', { count: Math.floor(elapsed / 86_400) })
+}
+
+export function formatDuration(startedAtMs: number, updatedAtMs: number, t: ComposerTranslation): string {
+  const elapsed = Math.max(0, Math.floor((updatedAtMs - startedAtMs) / 1_000))
+  if (elapsed <= 59) return t('time.lessThanMinute')
+  if (elapsed <= 3_599) return t('time.minutes', { count: Math.floor(elapsed / 60) })
+  if (elapsed <= 86_399) {
+    return t('time.hoursMinutes', {
+      hours: Math.floor(elapsed / 3_600),
+      minutes: String(Math.floor((elapsed % 3_600) / 60)).padStart(2, '0'),
+    })
+  }
+  return t('time.days', { count: Math.floor(elapsed / 86_400) })
+}
+
+export function formatEventTime(timestampMs: number, locale: SupportedLocale): string {
+  return new Intl.DateTimeFormat(localeTag(locale), { hour: '2-digit', minute: '2-digit' }).format(timestampMs)
+}
+
+export function formatResetTime(timestampMs: number, locale: SupportedLocale, t: ComposerTranslation): string {
+  const date = new Intl.DateTimeFormat(localeTag(locale), {
+    weekday: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(timestampMs)
+  return t('time.resetAt', { date })
+}
+
+export function formatUsageCost(cost: UsageCost, locale: SupportedLocale, t: ComposerTranslation): string {
+  const number = (value: number, maximumFractionDigits = 2) =>
+    new Intl.NumberFormat(localeTag(locale), { maximumFractionDigits }).format(value)
+
+  switch (cost.kind) {
+    case 'credits':
+      return t('cost.credits', { value: number(cost.value) })
+    case 'extraUsage':
+      return t('cost.extraUsage', { value: number(cost.value), currency: cost.currency })
+    case 'includedOnDemand':
+      return t('cost.includedOnDemand', {
+        included: number(cost.included),
+        onDemand: number(cost.onDemand),
+      })
+    case 'localMeasurement':
+      return t('cost.localMeasurement', {
+        time: formatRelativeTime(cost.measuredAtMs, locale, t),
+      })
+    case 'tokensToday':
+      return t('cost.tokensToday', { value: number(cost.value) })
+    case 'consumption':
+      return t('cost.consumption', { value: number(cost.value) })
+  }
+}

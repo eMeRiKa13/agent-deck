@@ -11,11 +11,11 @@ use tokio::{
 use crate::{
     domain::{
         AgentSession, EventKind, ProviderId, ProviderQuota, ProviderSnapshot, QuotaWindow,
-        SessionEvent, SessionStatus,
+        SessionEvent, SessionStatus, UiText, UsageCost,
     },
     utils::{
-        clamp_percent, elapsed_label, event_time, home_dir, normalize_epoch_ms, project_name,
-        relative_time, reset_label_from_epoch, tail_lines, truncate,
+        clamp_percent, event_timestamp_ms, home_dir, normalize_epoch_ms, project_name,
+        reset_at_ms_from_epoch, tail_lines, truncate,
     },
 };
 
@@ -119,8 +119,7 @@ fn thread_to_session(row: ThreadRow) -> AgentSession {
     let summary_source = [&row.preview, &row.first_user_message, &row.title]
         .into_iter()
         .find(|value| !value.trim().is_empty())
-        .map(|value| value.as_str())
-        .unwrap_or("Conversation Codex");
+        .map(|value| value.as_str());
     let age_seconds = (crate::utils::now_ms() - normalize_epoch_ms(row.updated_at)).max(0) / 1_000;
     let last_kind = events.last().map(|event| event.kind);
     let status = if age_seconds < 100 {
@@ -136,14 +135,18 @@ fn thread_to_session(row: ThreadRow) -> AgentSession {
     AgentSession {
         id: format!("codex:{}", row.id),
         provider: ProviderId::Codex,
-        title: truncate(
-            if row.title.trim().is_empty() {
+        title: {
+            let source = if row.title.trim().is_empty() {
                 &row.first_user_message
             } else {
                 &row.title
-            },
-            74,
-        ),
+            };
+            if source.trim().is_empty() {
+                UiText::message("generated.codexConversation")
+            } else {
+                UiText::from(truncate(source, 74))
+            }
+        },
         project: project_name(&row.cwd),
         branch: if row.branch.is_empty() {
             "—".to_string()
@@ -156,12 +159,13 @@ fn thread_to_session(row: ThreadRow) -> AgentSession {
             row.model
         },
         status,
-        elapsed: elapsed_label(row.created_at, row.updated_at),
-        updated_at: relative_time(row.updated_at),
-        token_count: row.token_count,
-        summary: truncate(summary_source, 180),
-        events,
+        started_at_ms: normalize_epoch_ms(row.created_at),
         updated_at_ms: normalize_epoch_ms(row.updated_at),
+        token_count: row.token_count,
+        summary: summary_source
+            .map(|value| UiText::from(truncate(value, 180)))
+            .unwrap_or_else(|| UiText::message("generated.codexConversation")),
+        events,
     }
 }
 
@@ -176,30 +180,37 @@ fn parse_events(path: &std::path::Path, fallback_ms: i64) -> Vec<SessionEvent> {
         let payload_type = payload["type"].as_str().unwrap_or_default();
         let timestamp = value["timestamp"].as_str();
         let event = match payload_type {
-            "user_message" => payload["message"]
-                .as_str()
-                .map(|body| (EventKind::User, "Vous".to_string(), truncate(body, 240))),
+            "user_message" => payload["message"].as_str().map(|body| {
+                (
+                    EventKind::User,
+                    UiText::message("generated.you"),
+                    UiText::from(truncate(body, 240)),
+                )
+            }),
             "agent_message" => payload["message"].as_str().map(|body| {
                 (
                     EventKind::Assistant,
-                    "Codex".to_string(),
-                    truncate(body, 240),
+                    UiText::from("Codex"),
+                    UiText::from(truncate(body, 240)),
                 )
             }),
             "custom_tool_call" => Some((
                 EventKind::Tool,
-                payload["name"].as_str().unwrap_or("Outil").to_string(),
-                "Exécution d’un outil local".to_string(),
+                payload["name"]
+                    .as_str()
+                    .map(UiText::from)
+                    .unwrap_or_else(|| UiText::message("generated.tool")),
+                UiText::message("generated.localToolExecution"),
             )),
             "task_started" => Some((
                 EventKind::System,
-                "Travail démarré".to_string(),
-                "Codex traite la demande.".to_string(),
+                UiText::message("generated.taskStarted"),
+                UiText::message("generated.taskStartedBody"),
             )),
             "task_complete" | "turn_complete" => Some((
                 EventKind::System,
-                "Travail terminé".to_string(),
-                "La dernière demande est terminée.".to_string(),
+                UiText::message("generated.taskCompleted"),
+                UiText::message("generated.taskCompletedBody"),
             )),
             _ => None,
         };
@@ -209,7 +220,7 @@ fn parse_events(path: &std::path::Path, fallback_ms: i64) -> Vec<SessionEvent> {
                 kind,
                 title,
                 body,
-                time: event_time(timestamp, fallback_ms),
+                timestamp_ms: event_timestamp_ms(timestamp, fallback_ms),
             });
         }
     }
@@ -342,28 +353,25 @@ fn parse_quota(account: &Value, response: &Value) -> ProviderQuota {
         let (id, label) = codex_window_identity(key, duration_minutes, has_single_window);
         windows.push(QuotaWindow {
             id: id.to_string(),
-            label: label.to_string(),
+            label: UiText::message(label),
             used_percent: clamp_percent(window["usedPercent"].as_f64().unwrap_or_default()),
-            reset_label: reset_label_from_epoch(window["resetsAt"].as_i64()),
+            reset_at_ms: reset_at_ms_from_epoch(window["resetsAt"].as_i64()),
+            reset_text: None,
         });
     }
     let credits = snapshot["credits"]["balance"]
         .as_str()
-        .map(|balance| {
-            balance
-                .parse::<f64>()
-                .map(|value| format!("{value:.2} crédits"))
-                .unwrap_or_else(|_| format!("{balance} crédits"))
-        });
+        .and_then(|balance| balance.parse::<f64>().ok())
+        .map(|value| UsageCost::Credits { value });
     ProviderQuota {
         provider: ProviderId::Codex,
         plan: title_case(account["planType"].as_str().unwrap_or("Codex")),
         account: account["email"]
             .as_str()
-            .unwrap_or("Compte Codex")
-            .to_string(),
+            .map(UiText::from)
+            .unwrap_or_else(|| UiText::message("generated.codexAccount")),
         windows,
-        cost_label: credits,
+        cost: credits,
     }
 }
 
@@ -373,11 +381,11 @@ fn codex_window_identity(
     has_single_window: bool,
 ) -> (&'static str, &'static str) {
     match duration_minutes {
-        Some(300) => ("codex-session", "5 heures"),
-        Some(minutes) if minutes >= 24 * 60 => ("codex-global", "Limite globale"),
-        _ if has_single_window => ("codex-global", "Limite globale"),
-        _ if key == "primary" => ("codex-session", "Session"),
-        _ => ("codex-global", "Limite globale"),
+        Some(300) => ("codex-session", "quota.fiveHours"),
+        Some(minutes) if minutes >= 24 * 60 => ("codex-global", "quota.global"),
+        _ if has_single_window => ("codex-global", "quota.global"),
+        _ if key == "primary" => ("codex-session", "quota.session"),
+        _ => ("codex-global", "quota.global"),
     }
 }
 
@@ -416,10 +424,16 @@ mod tests {
 
         assert_eq!(quota.windows.len(), 1);
         assert_eq!(quota.windows[0].id, "codex-global");
-        assert_eq!(quota.windows[0].label, "Limite globale");
+        assert!(matches!(
+            &quota.windows[0].label,
+            UiText::Message { key, .. } if key == "quota.global"
+        ));
         assert_eq!(quota.windows[0].used_percent, 39);
         assert_eq!(quota.plan, "Pro");
-        assert_eq!(quota.cost_label.as_deref(), Some("12.50 crédits"));
+        assert!(matches!(
+            quota.cost,
+            Some(UsageCost::Credits { value }) if value == 12.5
+        ));
     }
 
     #[test]
@@ -441,8 +455,14 @@ mod tests {
         let quota = parse_quota(&account, &limits);
 
         assert_eq!(quota.windows.len(), 2);
-        assert_eq!(quota.windows[0].label, "5 heures");
-        assert_eq!(quota.windows[1].label, "Limite globale");
+        assert!(matches!(
+            &quota.windows[0].label,
+            UiText::Message { key, .. } if key == "quota.fiveHours"
+        ));
+        assert!(matches!(
+            &quota.windows[1].label,
+            UiText::Message { key, .. } if key == "quota.global"
+        ));
     }
 
     #[test]

@@ -2,7 +2,12 @@ mod claude;
 mod codex;
 mod cursor;
 
-use crate::domain::{DashboardSnapshot, ProviderDefinition, ProviderId, ProviderSnapshot};
+use serde_json::{Map, Value};
+
+use crate::{
+    domain::{DashboardSnapshot, ProviderDefinition, ProviderId, ProviderSnapshot, UiText},
+    utils::now_ms,
+};
 
 pub async fn dashboard_snapshot() -> DashboardSnapshot {
     let (codex, claude, cursor) = tokio::join!(codex::load(), claude::load(), cursor::load());
@@ -48,7 +53,7 @@ pub async fn dashboard_snapshot() -> DashboardSnapshot {
         providers,
         sessions,
         quotas,
-        refreshed_at: "à l’instant".to_string(),
+        refreshed_at_ms: now_ms(),
     }
 }
 
@@ -64,26 +69,33 @@ fn merge_provider(
 ) {
     match result {
         Ok(mut snapshot) => {
+            let error = snapshot.warning.map(|_| provider_error("errors.providerPartial", name));
             providers.push(ProviderDefinition {
                 id,
                 name,
                 short_name,
                 accent,
                 connected: true,
-                error: snapshot.warning,
+                error,
             });
             sessions.append(&mut snapshot.sessions);
             if let Some(quota) = snapshot.quota {
                 quotas.push(quota);
             }
         }
-        Err(error) => providers.push(ProviderDefinition {
+        Err(_error) => providers.push(ProviderDefinition {
             id,
             name,
             short_name,
             accent,
             connected: false,
-            error: Some(error),
+            error: Some(provider_error("errors.providerUnavailable", name)),
         }),
     }
+}
+
+fn provider_error(key: &str, provider: &str) -> UiText {
+    let mut params = Map::new();
+    params.insert("provider".to_string(), Value::String(provider.to_string()));
+    UiText::message_with(key, params)
 }

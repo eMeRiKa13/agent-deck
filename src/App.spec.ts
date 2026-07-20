@@ -1,10 +1,21 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import App from '@/App.vue'
+import { i18n, LOCALE_STORAGE_KEY, setAppLocale } from '@/i18n'
+
+function mountApp(locale: 'fr' | 'en' = 'fr') {
+  setAppLocale(locale, false)
+  return mount(App, { global: { plugins: [i18n] } })
+}
 
 describe('Agent dashboard', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    document.documentElement.lang = ''
+  })
+
   it('renders the three providers and selects a session', async () => {
-    const wrapper = mount(App)
+    const wrapper = mountApp()
     await flushPromises()
 
     expect(wrapper.text()).toContain('Codex')
@@ -20,7 +31,7 @@ describe('Agent dashboard', () => {
   })
 
   it('keeps the dashboard read-only', async () => {
-    const wrapper = mount(App)
+    const wrapper = mountApp()
     await flushPromises()
 
     expect(wrapper.text()).not.toContain('Nouvelle session')
@@ -35,18 +46,18 @@ describe('Agent dashboard', () => {
   })
 
   it('disables unfinished navigation and filtering controls', async () => {
-    const wrapper = mount(App)
+    const wrapper = mountApp()
     await flushPromises()
 
-    expect(wrapper.get('[data-nav-item="Activité"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[data-nav-item="Utilisation"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-nav-item="activity"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-nav-item="usage"]').attributes('disabled')).toBeDefined()
     expect(wrapper.get('[data-session-filter]').attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain('Sessions récentes')
     expect(wrapper.text()).toContain('Actualisation auto · 15 s')
   })
 
   it('keeps usage visible in the responsive workspace', async () => {
-    const wrapper = mount(App)
+    const wrapper = mountApp()
     await flushPromises()
 
     expect(wrapper.find('.usage-panel').exists()).toBe(true)
@@ -54,5 +65,22 @@ describe('Agent dashboard', () => {
     expect(wrapper.find('.dashboard-workspace').exists()).toBe(true)
     expect(wrapper.findAll('.quota-card')).toHaveLength(3)
     expect(wrapper.findAll('.provider-mark img').length).toBeGreaterThan(3)
+  })
+
+  it('switches the complete interface to English and persists the choice', async () => {
+    const wrapper = mountApp()
+    await flushPromises()
+
+    const selector = wrapper.get('[data-locale-selector]')
+    expect(selector.element.tagName).toBe('SELECT')
+    await selector.setValue('en')
+
+    expect(wrapper.text()).toContain('Control center')
+    expect(wrapper.text()).toContain('Recent sessions')
+    expect(wrapper.text()).toContain('Build the agent dashboard')
+    expect(wrapper.text()).not.toContain('Centre de contrôle')
+    expect(document.documentElement.lang).toBe('en')
+    expect(localStorage.getItem(LOCALE_STORAGE_KEY)).toBe('en')
+    expect(selector.attributes('aria-label')).toBe('Change language')
   })
 })

@@ -1,4 +1,51 @@
 use serde::Serialize;
+use serde_json::{Map, Value};
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum UiText {
+    Raw(String),
+    Message {
+        key: String,
+        #[serde(skip_serializing_if = "Map::is_empty")]
+        params: Map<String, Value>,
+    },
+}
+
+impl UiText {
+    pub fn message(key: impl Into<String>) -> Self {
+        Self::Message {
+            key: key.into(),
+            params: Map::new(),
+        }
+    }
+
+    pub fn message_with(key: impl Into<String>, params: Map<String, Value>) -> Self {
+        Self::Message {
+            key: key.into(),
+            params,
+        }
+    }
+
+    pub fn as_raw(&self) -> Option<&str> {
+        match self {
+            Self::Raw(value) => Some(value),
+            Self::Message { .. } => None,
+        }
+    }
+}
+
+impl From<String> for UiText {
+    fn from(value: String) -> Self {
+        Self::Raw(value)
+    }
+}
+
+impl From<&str> for UiText {
+    fn from(value: &str) -> Self {
+        Self::Raw(value.to_string())
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -34,7 +81,7 @@ pub struct ProviderDefinition {
     pub short_name: &'static str,
     pub accent: &'static str,
     pub connected: bool,
-    pub error: Option<String>,
+    pub error: Option<UiText>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -42,9 +89,9 @@ pub struct ProviderDefinition {
 pub struct SessionEvent {
     pub id: String,
     pub kind: EventKind,
-    pub title: String,
-    pub body: String,
-    pub time: String,
+    pub title: UiText,
+    pub body: UiText,
+    pub timestamp_ms: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -52,27 +99,35 @@ pub struct SessionEvent {
 pub struct AgentSession {
     pub id: String,
     pub provider: ProviderId,
-    pub title: String,
-    pub project: String,
+    pub title: UiText,
+    pub project: UiText,
     pub branch: String,
     pub model: String,
     pub status: SessionStatus,
-    pub elapsed: String,
-    pub updated_at: String,
-    pub token_count: u64,
-    pub summary: String,
-    pub events: Vec<SessionEvent>,
-    #[serde(skip)]
+    pub started_at_ms: i64,
     pub updated_at_ms: i64,
+    pub token_count: u64,
+    pub summary: UiText,
+    pub events: Vec<SessionEvent>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaWindow {
     pub id: String,
-    pub label: String,
+    pub label: UiText,
     pub used_percent: u8,
-    pub reset_label: String,
+    pub reset_at_ms: Option<i64>,
+    pub reset_text: Option<UiText>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum UsageCost {
+    Credits { value: f64 },
+    ExtraUsage { value: f64, currency: String },
+    IncludedOnDemand { included: f64, on_demand: f64 },
+    LocalMeasurement { measured_at_ms: i64 },
 }
 
 #[derive(Debug, Serialize)]
@@ -80,9 +135,9 @@ pub struct QuotaWindow {
 pub struct ProviderQuota {
     pub provider: ProviderId,
     pub plan: String,
-    pub account: String,
+    pub account: UiText,
     pub windows: Vec<QuotaWindow>,
-    pub cost_label: Option<String>,
+    pub cost: Option<UsageCost>,
 }
 
 #[derive(Debug, Serialize)]
@@ -91,7 +146,7 @@ pub struct DashboardSnapshot {
     pub providers: Vec<ProviderDefinition>,
     pub sessions: Vec<AgentSession>,
     pub quotas: Vec<ProviderQuota>,
-    pub refreshed_at: String,
+    pub refreshed_at_ms: i64,
 }
 
 #[derive(Debug, Default)]

@@ -7,11 +7,11 @@ use serde_json::Value;
 use crate::{
     domain::{
         AgentSession, EventKind, ProviderId, ProviderQuota, ProviderSnapshot, QuotaWindow,
-        SessionEvent, SessionStatus,
+        SessionEvent, SessionStatus, UiText, UsageCost,
     },
     utils::{
-        clamp_percent, elapsed_label, event_time, home_dir, normalize_epoch_ms, project_name,
-        relative_time, reset_label_from_iso, truncate,
+        clamp_percent, event_timestamp_ms, home_dir, normalize_epoch_ms, project_name,
+        reset_at_ms_from_iso, truncate,
     },
 };
 
@@ -108,7 +108,7 @@ fn header_to_session(connection: &Connection, row: HeaderRow) -> AgentSession {
         .iter()
         .rev()
         .find(|event| matches!(event.kind, EventKind::Assistant))
-        .map(|event| event.body.as_str())
+        .and_then(|event| event.body.as_raw())
         .or_else(|| header["subtitle"].as_str())
         .unwrap_or(name);
     let workspace = header["workspaceIdentifier"]
@@ -139,7 +139,11 @@ fn header_to_session(connection: &Connection, row: HeaderRow) -> AgentSession {
     AgentSession {
         id: format!("cursor:{}", row.composer_id),
         provider: ProviderId::Cursor,
-        title: truncate(name, 74),
+        title: if name == "Conversation Cursor" {
+            UiText::message("generated.cursorConversation")
+        } else {
+            UiText::from(truncate(name, 74))
+        },
         project: project_name(workspace),
         branch,
         model: header["forceMode"]
@@ -148,12 +152,15 @@ fn header_to_session(connection: &Connection, row: HeaderRow) -> AgentSession {
             .unwrap_or("Cursor Agent")
             .to_string(),
         status,
-        elapsed: elapsed_label(row.created_at, row.updated_at),
-        updated_at: relative_time(row.updated_at),
-        token_count,
-        summary: truncate(summary, 180),
-        events,
+        started_at_ms: normalize_epoch_ms(row.created_at),
         updated_at_ms: normalize_epoch_ms(row.updated_at),
+        token_count,
+        summary: if summary == "Conversation Cursor" {
+            UiText::message("generated.cursorConversation")
+        } else {
+            UiText::from(truncate(summary, 180))
+        },
+        events,
     }
 }
 
@@ -208,9 +215,9 @@ fn load_bubbles(
                 .as_str()
                 .filter(|value| !value.trim().is_empty())?;
             let (kind, title) = if bubble_type == 1 {
-                (EventKind::User, "Vous")
+                (EventKind::User, UiText::message("generated.you"))
             } else if bubble_type == 2 {
-                (EventKind::Assistant, "Cursor")
+                (EventKind::Assistant, UiText::from("Cursor"))
             } else {
                 return None;
             };
@@ -219,9 +226,9 @@ fn load_bubbles(
             Some(SessionEvent {
                 id: format!("cursor-event-{id}"),
                 kind,
-                title: title.to_string(),
-                body: truncate(body, 240),
-                time: event_time(None, timestamp),
+                title,
+                body: UiText::from(truncate(body, 240)),
+                timestamp_ms: event_timestamp_ms(None, timestamp),
             })
         })
         .collect::<Vec<_>>();
@@ -340,24 +347,27 @@ fn parse_quota(summary: &Value, account: &Value) -> ProviderQuota {
 
     let mut windows = vec![QuotaWindow {
         id: "cursor-plan".to_string(),
-        label: "Inclus au forfait".to_string(),
+        label: UiText::message("quota.included"),
         used_percent: clamp_percent(plan_percent),
-        reset_label: reset_label_from_iso(summary["billingCycleEnd"].as_str()),
+        reset_at_ms: reset_at_ms_from_iso(summary["billingCycleEnd"].as_str()),
+        reset_text: Some(UiText::message("quota.resetUnknown")),
     }];
     if plan["autoPercentUsed"].is_number() {
         windows.push(QuotaWindow {
             id: "cursor-auto".to_string(),
-            label: "Modèle Auto".to_string(),
+            label: UiText::message("quota.autoModel"),
             used_percent: clamp_percent(plan["autoPercentUsed"].as_f64().unwrap_or_default()),
-            reset_label: "cycle de facturation en cours".to_string(),
+            reset_at_ms: None,
+            reset_text: Some(UiText::message("quota.billingCycle")),
         });
     }
     if plan["apiPercentUsed"].is_number() {
         windows.push(QuotaWindow {
             id: "cursor-api".to_string(),
-            label: "Modèles API".to_string(),
+            label: UiText::message("quota.apiModels"),
             used_percent: clamp_percent(plan["apiPercentUsed"].as_f64().unwrap_or_default()),
-            reset_label: "cycle de facturation en cours".to_string(),
+            reset_at_ms: None,
+            reset_text: Some(UiText::message("quota.billingCycle")),
         });
     }
     let used_cents = plan["used"]
@@ -376,14 +386,13 @@ fn parse_quota(summary: &Value, account: &Value) -> ProviderQuota {
             .unwrap_or_else(|| "Cursor".to_string()),
         account: account["email"]
             .as_str()
-            .unwrap_or("Compte Cursor")
-            .to_string(),
+            .map(UiText::from)
+            .unwrap_or_else(|| UiText::message("generated.cursorAccount")),
         windows,
-        cost_label: Some(format!(
-            "{:.2} $ inclus · {:.2} $ à la demande",
-            used_cents / 100.0,
-            on_demand_cents / 100.0
-        )),
+        cost: Some(UsageCost::IncludedOnDemand {
+            included: used_cents / 100.0,
+            on_demand: on_demand_cents / 100.0,
+        }),
     }
 }
 

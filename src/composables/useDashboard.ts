@@ -1,12 +1,16 @@
 import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useTimeoutPoll } from '@vueuse/core'
 import { createProviderAdapter } from '@/data/tauri'
 import type { AgentSession, DashboardSnapshot, ProviderId } from '@/domain/dashboard'
+import type { SupportedLocale } from '@/i18n'
+import { localeTag, translateUiText } from '@/i18n/format'
 
 const adapter = createProviderAdapter()
 const POLLING_INTERVAL_MS = 15_000
 
 export function useDashboard() {
+  const { t, locale } = useI18n({ useScope: 'global' })
   const snapshot = ref<DashboardSnapshot | null>(null)
   const activeProvider = ref<ProviderId | 'all'>('all')
   const selectedSessionId = ref('codex-dashboard')
@@ -16,12 +20,15 @@ export function useDashboard() {
   let pendingLoad: Promise<void> | null = null
 
   const sessions = computed(() => {
-    const query = search.value.trim().toLocaleLowerCase('fr')
+    const tag = localeTag(locale.value as SupportedLocale)
+    const query = search.value.trim().toLocaleLowerCase(tag)
     return (snapshot.value?.sessions ?? []).filter((session) => {
       const matchesProvider = activeProvider.value === 'all' || session.provider === activeProvider.value
       const matchesSearch =
         query.length === 0 ||
-        `${session.title} ${session.project} ${session.summary}`.toLocaleLowerCase('fr').includes(query)
+        `${translateUiText(session.title, t)} ${translateUiText(session.project, t)} ${translateUiText(session.summary, t)}`
+          .toLocaleLowerCase(tag)
+          .includes(query)
       return matchesProvider && matchesSearch
     })
   })
@@ -66,7 +73,6 @@ export function useDashboard() {
     refreshing.value = true
     try {
       await load()
-      if (snapshot.value) snapshot.value.refreshedAt = 'à l’instant'
     } finally {
       refreshing.value = false
     }
