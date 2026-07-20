@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Frontend build and test output
+dist/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# Rust and Tauri generated output
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Environment and local configuration
+.env
+.env.*
+!.env.example
+.direnv/
+
+# Logs
+*.log
+pnpm-debug.log*
+
+# Editors and macOS
+.DS_Store
+.idea/
+.vscode/
+
+# Local design QA artifacts
+qa/
+design-qa.md
