@@ -2,7 +2,9 @@
 import {
   ActivityIcon,
   BarChart3Icon,
+  InfoIcon,
   LayoutDashboardIcon,
+  ShieldCheckIcon,
 } from '@lucide/vue'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -19,6 +21,7 @@ defineProps<{
 
 const emit = defineEmits<{
   selectProvider: [provider: ProviderId | 'all']
+  openAbout: []
 }>()
 
 const { t } = useI18n({ useScope: 'global' })
@@ -103,9 +106,29 @@ const providerStack: ProviderId[] = ['codex', 'claude', 'cursor']
     </div>
 
     <div class="app-sidebar__footer">
-      <div class="local-indicator">
-        <span class="local-indicator__dot" />
-        {{ t('navigation.localOnly') }}
+      <button
+        type="button"
+        class="about-nav-item"
+        data-about-trigger
+        :aria-label="t('navigation.about')"
+        :title="t('navigation.about')"
+        @click="emit('openAbout')"
+      >
+        <span class="about-nav-item__icon" aria-hidden="true">
+          <InfoIcon :size="17" />
+        </span>
+        <span>{{ t('navigation.about') }}</span>
+      </button>
+      <div
+        class="local-indicator"
+        role="status"
+        :aria-label="t('navigation.localOnly')"
+        :title="t('navigation.localOnly')"
+      >
+        <span class="local-indicator__icon" aria-hidden="true">
+          <ShieldCheckIcon :size="15" />
+        </span>
+        <span>{{ t('navigation.localOnly') }}</span>
       </div>
     </div>
   </aside>

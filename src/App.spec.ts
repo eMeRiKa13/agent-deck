@@ -1,17 +1,21 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import App from '@/App.vue'
 import { i18n, LOCALE_STORAGE_KEY, setAppLocale } from '@/i18n'
 
 function mountApp(locale: 'fr' | 'en' = 'fr') {
   setAppLocale(locale, false)
-  return mount(App, { global: { plugins: [i18n] } })
+  return mount(App, { attachTo: document.body, global: { plugins: [i18n] } })
 }
 
 describe('Agent dashboard', () => {
   beforeEach(() => {
     localStorage.clear()
     document.documentElement.lang = ''
+  })
+
+  afterEach(() => {
+    document.body.innerHTML = ''
   })
 
   it('renders the three providers and selects a session', async () => {
@@ -56,6 +60,50 @@ describe('Agent dashboard', () => {
     expect(wrapper.text()).toContain('Actualisation auto · 15 s')
   })
 
+  it('opens the bilingual read-only About panel and restores focus when it closes', async () => {
+    const wrapper = mountApp()
+    await flushPromises()
+
+    const trigger = wrapper.get('[data-about-trigger]')
+    ;(trigger.element as HTMLButtonElement).focus()
+    await trigger.trigger('click')
+    await flushPromises()
+
+    const panel = document.body.querySelector<HTMLElement>('[data-about-panel]')
+    expect(panel?.getAttribute('role')).toBe('dialog')
+    expect(panel?.textContent).toContain('Pensé pour le CORSAIR XENEON EDGE')
+    expect(panel?.textContent).toContain('Antoine Frankart')
+    expect(panel?.textContent).toContain('Freelance Product Engineer')
+    expect(panel?.textContent).toContain('Version 0.1.0')
+    expect(panel?.querySelectorAll('[data-external-link]')).toHaveLength(3)
+
+    document.body.querySelector<HTMLButtonElement>('[data-about-close]')?.click()
+    await flushPromises()
+
+    expect(document.body.querySelector('[data-about-panel]')).toBeNull()
+    expect(document.activeElement).toBe(trigger.element)
+  })
+
+  it('closes About from the backdrop and Escape key', async () => {
+    const wrapper = mountApp()
+    await flushPromises()
+
+    const trigger = wrapper.get('[data-about-trigger]')
+    await trigger.trigger('click')
+    await flushPromises()
+    document.body.querySelector<HTMLButtonElement>('.about-backdrop')?.click()
+    await flushPromises()
+    expect(document.body.querySelector('[data-about-panel]')).toBeNull()
+
+    await trigger.trigger('click')
+    await flushPromises()
+    document.body.querySelector<HTMLButtonElement>('[data-about-close]')?.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+    )
+    await flushPromises()
+    expect(document.body.querySelector('[data-about-panel]')).toBeNull()
+  })
+
   it('keeps usage visible in the responsive workspace', async () => {
     const wrapper = mountApp()
     await flushPromises()
@@ -82,5 +130,10 @@ describe('Agent dashboard', () => {
     expect(document.documentElement.lang).toBe('en')
     expect(localStorage.getItem(LOCALE_STORAGE_KEY)).toBe('en')
     expect(selector.attributes('aria-label')).toBe('Change language')
+
+    await wrapper.get('[data-about-trigger]').trigger('click')
+    await flushPromises()
+    expect(document.body.querySelector('[data-about-panel]')?.textContent)
+      .toContain('Designed for the CORSAIR XENEON EDGE')
   })
 })

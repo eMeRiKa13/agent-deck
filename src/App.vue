@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { MoonIcon, RefreshCwIcon, SunIcon, WifiIcon } from '@lucide/vue'
 import { onKeyStroke, useColorMode, useMediaQuery } from '@vueuse/core'
+import AboutPanel from '@/components/AboutPanel.vue'
 import AppSidebar from '@/components/AppSidebar.vue'
 import LocaleSelector from '@/components/LocaleSelector.vue'
 import SessionDetail from '@/components/SessionDetail.vue'
@@ -36,6 +37,7 @@ const {
 const isDark = computed(() => mode.value === 'dark')
 const isCompactDetail = useMediaQuery('(max-width: 1799px)')
 const isSessionDetailOpen = ref(false)
+const isAboutOpen = ref(false)
 const isSessionDetailVisible = computed(() => !isCompactDetail.value || isSessionDetailOpen.value)
 
 watch(isCompactDetail, () => {
@@ -43,6 +45,10 @@ watch(isCompactDetail, () => {
 })
 
 onKeyStroke('Escape', () => {
+  if (isAboutOpen.value) {
+    isAboutOpen.value = false
+    return
+  }
   isSessionDetailOpen.value = false
 })
 
@@ -54,15 +60,21 @@ function handleSelectSession(id: string) {
   selectSession(id)
   if (isCompactDetail.value) isSessionDetailOpen.value = true
 }
+
+function openAbout() {
+  isSessionDetailOpen.value = false
+  isAboutOpen.value = true
+}
 </script>
 
 <template>
-  <div v-if="snapshot" class="dashboard-shell">
+  <div v-if="snapshot" class="dashboard-shell" :inert="isAboutOpen">
     <AppSidebar
       :providers="snapshot.providers"
       :active-provider="activeProvider"
       :active-count="activeCount"
       @select-provider="selectProvider"
+      @open-about="openAbout"
     />
 
     <main class="dashboard-main">
@@ -125,4 +137,6 @@ function handleSelectSession(id: string) {
     <span />
     {{ t('app.loading') }}
   </div>
+
+  <AboutPanel :open="isAboutOpen" @close="isAboutOpen = false" />
 </template>

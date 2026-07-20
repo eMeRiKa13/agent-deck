@@ -5,6 +5,26 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "https://enchanter.gg/en/"
+        },
+        {
+          "url": "https://enchanter.gg/fr/"
+        },
+        {
+          "url": "https://github.com/eMeRiKa13/agent-deck"
+        },
+        {
+          "url": "https://www.corsair.com/us/en/p/monitors/cc-9011311-ww/corsair-xeneon-edge-14-5-lcd-touchscreen-white-cc-9011311-ww"
+        },
+        {
+          "url": "https://www.corsair.com/fr/fr/p/monitors/cc-9011311-ww/corsair-xeneon-edge-14-5-lcd-touchscreen-white-cc-9011311-ww"
+        }
+      ]
+    }
   ]
 }
