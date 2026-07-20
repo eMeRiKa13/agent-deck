@@ -2,6 +2,8 @@
 
 Agent Deck is a read-only macOS dashboard that brings your Codex, Claude, and Cursor activity into one place.
 
+It was built specifically for the [CORSAIR XENEON EDGE 14.5-inch LCD touchscreen](https://www.corsair.com/fr/fr/p/monitors/cc-9011311-ww/corsair-xeneon-edge-14-5-lcd-touchscreen-white-cc-9011311-ww). The display’s native 2560 × 720, 32:9 canvas shaped Agent Deck’s three-pane layout and touch-friendly sizing.
+
 ![Agent Deck showing active sessions and usage at 2560 × 720](./agent-deck-2560x720.png)
 
 ## A companion display for AI coding sessions
@@ -21,7 +23,7 @@ Agent Deck is intentionally passive. It does not create sessions, send prompts, 
 - Provider availability and partial-data warnings.
 - Automatic refresh every 15 seconds without interrupting the interface.
 
-The three-column layout is optimized for a 2560 × 720 ultrawide touchscreen. On narrower displays, Agent Deck keeps sessions and usage visible while opening conversation details in a slide-over panel.
+On narrower displays, Agent Deck keeps sessions and usage visible while opening conversation details in a slide-over panel.
 
 The interface follows your light or dark system appearance and supports English and French. A manual language choice is stored locally.
 
