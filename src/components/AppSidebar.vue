@@ -2,9 +2,9 @@
 import {
   ActivityIcon,
   BarChart3Icon,
-  CommandIcon,
   LayoutDashboardIcon,
 } from '@lucide/vue'
+import agentDeckMark from '@/assets/branding/agent-deck-mark.png'
 import ProviderMark from '@/components/ProviderMark.vue'
 import type { ProviderDefinition, ProviderId } from '@/domain/dashboard'
 
@@ -32,7 +32,9 @@ const providerStack: ProviderId[] = ['codex', 'claude', 'cursor']
     <div data-tauri-drag-region class="app-sidebar__drag" />
 
     <div class="app-sidebar__brand">
-      <span class="app-sidebar__brand-mark"><CommandIcon :size="15" :stroke-width="2.2" /></span>
+      <span class="app-sidebar__brand-mark" aria-hidden="true">
+        <img :src="agentDeckMark" alt="" draggable="false" />
+      </span>
       <span>Agent Deck</span>
     </div>
 
