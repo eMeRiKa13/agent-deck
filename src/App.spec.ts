@@ -445,6 +445,23 @@ describe('Agent dashboard', () => {
     expect(wrapper.findAll('.provider-mark img').length).toBeGreaterThan(3)
   })
 
+  it('expands a single usage window without changing multi-window quotas', async () => {
+    const wrapper = mountApp()
+    await flushPromises()
+
+    const quotaCards = wrapper.findAll('.quota-card')
+    const codexCard = quotaCards.find((card) => card.text().includes('Codex'))
+    const claudeCard = quotaCards.find((card) => card.text().includes('Claude'))
+    const cursorCard = quotaCards.find((card) => card.text().includes('Cursor'))
+
+    expect(codexCard?.get('.quota-card__windows').classes())
+      .toContain('quota-card__windows--single')
+    expect(claudeCard?.get('.quota-card__windows').classes())
+      .not.toContain('quota-card__windows--single')
+    expect(cursorCard?.get('.quota-card__windows').classes())
+      .not.toContain('quota-card__windows--single')
+  })
+
   it('switches the complete interface to English and persists the choice', async () => {
     const wrapper = mountApp()
     await flushPromises()

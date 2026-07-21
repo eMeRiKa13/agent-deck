@@ -60,7 +60,10 @@ function formatPercent(value: number) {
           </div>
         </header>
 
-        <div class="quota-card__windows">
+        <div
+          class="quota-card__windows"
+          :class="{ 'quota-card__windows--single': quota.windows.length === 1 }"
+        >
           <div v-for="window in quota.windows" :key="window.id" class="quota-window">
             <div class="quota-window__labels">
               <span>{{ translateUiText(window.label, t) }}</span>
