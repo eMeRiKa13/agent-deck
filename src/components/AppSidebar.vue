@@ -8,7 +8,7 @@ import {
 } from '@lucide/vue'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import agentDeckMark from '@/assets/branding/agent-deck-mark.png'
+import AgentDeckMark from '@/components/AgentDeckMark.vue'
 import ProviderMark from '@/components/ProviderMark.vue'
 import type { ProviderDefinition, ProviderId } from '@/domain/dashboard'
 import { translateUiText } from '@/i18n/format'
@@ -41,7 +41,7 @@ const providerStack: ProviderId[] = ['codex', 'claude', 'cursor']
 
     <div class="app-sidebar__brand">
       <span class="app-sidebar__brand-mark" aria-hidden="true">
-        <img :src="agentDeckMark" alt="" draggable="false" />
+        <AgentDeckMark />
       </span>
       <span>{{ t('app.name') }}</span>
     </div>

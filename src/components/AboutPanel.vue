@@ -7,10 +7,10 @@ import {
 } from '@lucide/vue'
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import agentDeckMark from '@/assets/branding/agent-deck-mark.png'
 import enchanterFavicon from '@/assets/branding/enchanter-favicon.ico'
 import githubInvertocatBlack from '@/assets/branding/github-invertocat-black.svg'
 import githubInvertocatWhite from '@/assets/branding/github-invertocat-white.svg'
+import AgentDeckMark from '@/components/AgentDeckMark.vue'
 import { APP_VERSION, openExternalLink, type ExternalLinkId, type ExternalLinkLocale } from '@/config/about'
 
 const props = defineProps<{
@@ -107,7 +107,7 @@ async function handleExternalLink(linkId: ExternalLinkId) {
       >
         <header class="about-panel__header">
           <div class="about-panel__identity">
-            <img :src="agentDeckMark" alt="" draggable="false" />
+            <AgentDeckMark />
             <div>
               <h2 id="about-title">{{ t('app.name') }}</h2>
               <span>{{ t('about.version', { version: APP_VERSION }) }}</span>
