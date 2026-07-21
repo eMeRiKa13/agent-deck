@@ -14,8 +14,8 @@ const CORSAIR_EN_URL: &str = "https://www.corsair.com/us/en/p/monitors/cc-901131
 const CORSAIR_FR_URL: &str = "https://www.corsair.com/fr/fr/p/monitors/cc-9011311-ww/corsair-xeneon-edge-14-5-lcd-touchscreen-white-cc-9011311-ww";
 
 #[tauri::command]
-async fn get_dashboard_snapshot() -> DashboardSnapshot {
-    providers::dashboard_snapshot().await
+async fn get_dashboard_snapshot(include_quotas: Option<bool>) -> DashboardSnapshot {
+    providers::dashboard_snapshot(include_quotas.unwrap_or(true)).await
 }
 
 fn external_url(link_id: &str, locale: &str) -> Option<&'static str> {
@@ -30,7 +30,11 @@ fn external_url(link_id: &str, locale: &str) -> Option<&'static str> {
 }
 
 #[tauri::command]
-fn open_external_link(app: tauri::AppHandle, link_id: String, locale: String) -> Result<(), String> {
+fn open_external_link(
+    app: tauri::AppHandle,
+    link_id: String,
+    locale: String,
+) -> Result<(), String> {
     let url = external_url(&link_id, &locale)
         .ok_or_else(|| format!("external link is not allowed: {link_id} ({locale})"))?;
 

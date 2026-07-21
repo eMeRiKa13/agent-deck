@@ -5,12 +5,19 @@ mod cursor;
 use serde_json::{Map, Value};
 
 use crate::{
-    domain::{DashboardSnapshot, ProviderDefinition, ProviderId, ProviderSnapshot, UiText},
+    domain::{
+        AgentSession, DashboardSnapshot, ProviderDefinition, ProviderId, ProviderQuota,
+        ProviderSnapshot, UiText,
+    },
     utils::now_ms,
 };
 
-pub async fn dashboard_snapshot() -> DashboardSnapshot {
-    let (codex, claude, cursor) = tokio::join!(codex::load(), claude::load(), cursor::load());
+pub async fn dashboard_snapshot(include_quotas: bool) -> DashboardSnapshot {
+    let (codex, claude, cursor) = tokio::join!(
+        codex::load(include_quotas),
+        claude::load(include_quotas),
+        cursor::load(include_quotas)
+    );
 
     let mut providers = Vec::with_capacity(3);
     let mut sessions = Vec::new();
@@ -57,6 +64,41 @@ pub async fn dashboard_snapshot() -> DashboardSnapshot {
     }
 }
 
+// Keep whichever part of a provider loaded successfully and surface the rest as a warning.
+pub(crate) fn partial_snapshot(
+    sessions: Result<Vec<AgentSession>, String>,
+    quota: Option<Result<ProviderQuota, String>>,
+) -> Result<ProviderSnapshot, String> {
+    let mut warnings = Vec::new();
+    let sessions = match sessions {
+        Ok(sessions) => sessions,
+        Err(error) => {
+            warnings.push(error);
+            Vec::new()
+        }
+    };
+    let quota_requested = quota.is_some();
+    let quota = match quota {
+        Some(Ok(quota)) => Some(quota),
+        Some(Err(error)) => {
+            warnings.push(error);
+            None
+        }
+        None => None,
+    };
+
+    let has_requested_data = !sessions.is_empty() || (quota_requested && quota.is_some());
+    if !has_requested_data {
+        return Err(warnings.join(" · "));
+    }
+
+    Ok(ProviderSnapshot {
+        sessions,
+        quota,
+        warning: (!warnings.is_empty()).then(|| warnings.join(" · ")),
+    })
+}
+
 fn merge_provider(
     providers: &mut Vec<ProviderDefinition>,
     sessions: &mut Vec<crate::domain::AgentSession>,
@@ -69,7 +111,10 @@ fn merge_provider(
 ) {
     match result {
         Ok(mut snapshot) => {
-            let error = snapshot.warning.map(|_| provider_error("errors.providerPartial", name));
+            let error = snapshot.warning.map(|warning| {
+                eprintln!("Agent Deck: partial {name} data: {warning}");
+                provider_error("errors.providerPartial", name)
+            });
             providers.push(ProviderDefinition {
                 id,
                 name,
@@ -83,14 +128,17 @@ fn merge_provider(
                 quotas.push(quota);
             }
         }
-        Err(_error) => providers.push(ProviderDefinition {
-            id,
-            name,
-            short_name,
-            accent,
-            connected: false,
-            error: Some(provider_error("errors.providerUnavailable", name)),
-        }),
+        Err(error) => {
+            eprintln!("Agent Deck: {name} unavailable: {error}");
+            providers.push(ProviderDefinition {
+                id,
+                name,
+                short_name,
+                accent,
+                connected: false,
+                error: Some(provider_error("errors.providerUnavailable", name)),
+            });
+        }
     }
 }
 
@@ -98,4 +146,41 @@ fn provider_error(key: &str, provider: &str) -> UiText {
     let mut params = Map::new();
     params.insert("provider".to_string(), Value::String(provider.to_string()));
     UiText::message_with(key, params)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn quota() -> ProviderQuota {
+        ProviderQuota {
+            provider: ProviderId::Codex,
+            plan: "Plus".to_string(),
+            account: UiText::from("codex@example.com"),
+            windows: Vec::new(),
+            cost: None,
+        }
+    }
+
+    #[test]
+    fn keeps_quota_when_session_loading_fails() {
+        let snapshot = partial_snapshot(Err("sessions unavailable".to_string()), Some(Ok(quota())))
+            .expect("partial provider snapshot");
+
+        assert!(snapshot.sessions.is_empty());
+        assert!(snapshot.quota.is_some());
+        assert!(snapshot.warning.is_some());
+    }
+
+    #[test]
+    fn rejects_provider_when_every_requested_source_fails() {
+        let error = partial_snapshot(
+            Err("sessions unavailable".to_string()),
+            Some(Err("quota unavailable".to_string())),
+        )
+        .expect_err("provider should be unavailable");
+
+        assert!(error.contains("sessions unavailable"));
+        assert!(error.contains("quota unavailable"));
+    }
 }

@@ -9,25 +9,24 @@ use crate::{
         AgentSession, EventKind, ProviderId, ProviderQuota, ProviderSnapshot, QuotaWindow,
         SessionEvent, SessionStatus, UiText, UsageCost,
     },
+    providers::partial_snapshot,
     utils::{
         clamp_percent, event_timestamp_ms, home_dir, normalize_epoch_ms, project_name,
         reset_at_ms_from_iso, truncate,
     },
 };
 
-pub async fn load() -> Result<ProviderSnapshot, String> {
-    let sessions = tokio::task::spawn_blocking(load_sessions)
-        .await
-        .map_err(|error| format!("Lecture Cursor interrompue : {error}"))??;
-    let (quota, warning) = match load_quota().await {
-        Ok(quota) => (Some(quota), None),
-        Err(error) => (None, Some(error)),
+pub async fn load(include_quotas: bool) -> Result<ProviderSnapshot, String> {
+    let sessions = match tokio::task::spawn_blocking(load_sessions).await {
+        Ok(result) => result,
+        Err(error) => Err(format!("Lecture Cursor interrompue : {error}")),
     };
-    Ok(ProviderSnapshot {
-        sessions,
-        quota,
-        warning,
-    })
+    let quota = if include_quotas {
+        Some(load_quota().await)
+    } else {
+        None
+    };
+    partial_snapshot(sessions, quota)
 }
 
 fn db_path() -> Result<std::path::PathBuf, String> {

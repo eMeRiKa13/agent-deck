@@ -23,6 +23,7 @@ describe('Agent dashboard', () => {
   afterEach(() => {
     mountedWrappers.splice(0).forEach((wrapper) => wrapper.unmount())
     document.body.innerHTML = ''
+    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
@@ -97,6 +98,31 @@ describe('Agent dashboard', () => {
     expect(wrapper.text()).toContain('Codex')
     expect(wrapper.get('.refresh-error').attributes('role')).toBe('status')
     expect(wrapper.get('.refresh-error').text()).toContain('base locale verrouillée')
+  })
+
+  it('polls sessions without reloading or clearing the quotas', async () => {
+    vi.useFakeTimers()
+    const initialSnapshot = await new DemoProviderAdapter().getSnapshot()
+    const getSnapshot = vi.spyOn(DemoProviderAdapter.prototype, 'getSnapshot')
+      .mockResolvedValueOnce(initialSnapshot)
+      .mockResolvedValueOnce({
+        ...initialSnapshot,
+        sessions: initialSnapshot.sessions.slice(1),
+        quotas: [],
+        refreshedAtMs: initialSnapshot.refreshedAtMs + 15_000,
+      })
+
+    const wrapper = mountApp()
+    await flushPromises()
+    expect(wrapper.findAll('.quota-card')).toHaveLength(3)
+
+    await vi.advanceTimersByTimeAsync(15_000)
+    await flushPromises()
+
+    expect(getSnapshot.mock.calls[0]?.[0]).toEqual({ includeQuotas: true })
+    expect(getSnapshot.mock.calls[1]?.[0]).toEqual({ includeQuotas: false })
+    expect(wrapper.findAll('.quota-card')).toHaveLength(3)
+    expect(wrapper.text()).not.toContain('Construire le tableau de bord agents')
   })
 
   it('uses the resolved system theme when leaving automatic mode', async () => {

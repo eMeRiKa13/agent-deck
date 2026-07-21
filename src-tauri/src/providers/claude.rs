@@ -3,6 +3,7 @@ use std::{
     fs::File,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
     time::UNIX_EPOCH,
 };
 
@@ -15,6 +16,7 @@ use crate::{
         AgentSession, EventKind, ProviderId, ProviderQuota, ProviderSnapshot, QuotaWindow,
         SessionEvent, SessionStatus, UiText, UsageCost,
     },
+    providers::partial_snapshot,
     utils::{
         clamp_percent, event_timestamp_ms, home_dir, normalize_epoch_ms, project_name,
         reset_at_ms_from_iso, truncate,
@@ -41,19 +43,34 @@ impl DesktopSessionMetadata {
 
 type SessionCandidate = (i64, PathBuf, Option<DesktopSessionMetadata>);
 
-pub async fn load() -> Result<ProviderSnapshot, String> {
-    let sessions = tokio::task::spawn_blocking(load_sessions)
-        .await
-        .map_err(|error| format!("Lecture Claude interrompue : {error}"))??;
-    let (quota, warning) = match load_quota().await {
-        Ok(quota) => (Some(quota), None),
-        Err(error) => (None, Some(error)),
+#[derive(Clone)]
+struct ParsedSession {
+    session: AgentSession,
+    idle_status: SessionStatus,
+}
+
+#[derive(Clone)]
+struct CachedSession {
+    file_len: u64,
+    file_modified_ns: u128,
+    modified_ms: i64,
+    metadata_updated_ms: i64,
+    parsed: ParsedSession,
+}
+
+static SESSION_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedSession>>> = OnceLock::new();
+
+pub async fn load(include_quotas: bool) -> Result<ProviderSnapshot, String> {
+    let sessions = match tokio::task::spawn_blocking(load_sessions).await {
+        Ok(result) => result,
+        Err(error) => Err(format!("Lecture Claude interrompue : {error}")),
     };
-    Ok(ProviderSnapshot {
-        sessions,
-        quota,
-        warning,
-    })
+    let quota = if include_quotas {
+        Some(load_quota().await)
+    } else {
+        None
+    };
+    partial_snapshot(sessions, quota)
 }
 
 // Discover desktop and local-agent transcripts, then keep ten valid sessions.
@@ -142,10 +159,77 @@ fn parse_candidate_sessions(candidates: Vec<SessionCandidate>, limit: usize) -> 
     candidates
         .into_iter()
         .filter_map(|(updated, path, metadata)| {
-            parse_session(&path, updated, metadata.as_ref()).ok()
+            cached_session(&path, updated, metadata.as_ref()).ok()
         })
         .take(limit)
         .collect()
+}
+
+// Reuse parsed transcripts until either the JSONL file or its desktop metadata changes.
+fn cached_session(
+    path: &Path,
+    modified_ms: i64,
+    metadata: Option<&DesktopSessionMetadata>,
+) -> Result<AgentSession, String> {
+    let file_metadata = path.metadata().map_err(|error| error.to_string())?;
+    let file_len = file_metadata.len();
+    let file_modified_ns = file_metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let metadata_updated_ms = metadata
+        .map(DesktopSessionMetadata::updated_at)
+        .unwrap_or_default();
+    let cache = SESSION_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(cached) = cache
+        .lock()
+        .map_err(|_| "Cache Claude indisponible".to_string())?
+        .get(path)
+        .filter(|cached| {
+            cached.file_len == file_len
+                && cached.file_modified_ns == file_modified_ns
+                && cached.modified_ms == modified_ms
+                && cached.metadata_updated_ms == metadata_updated_ms
+        })
+        .cloned()
+    {
+        return Ok(refresh_session_status(cached.parsed, modified_ms));
+    }
+
+    let parsed = parse_session(path, modified_ms, metadata)?;
+    let session = refresh_session_status(parsed.clone(), modified_ms);
+    let mut cache = cache
+        .lock()
+        .map_err(|_| "Cache Claude indisponible".to_string())?;
+    if cache.len() >= 64 {
+        cache.clear();
+    }
+    cache.insert(
+        path.to_path_buf(),
+        CachedSession {
+            file_len,
+            file_modified_ns,
+            modified_ms,
+            metadata_updated_ms,
+            parsed,
+        },
+    );
+    Ok(session)
+}
+
+// Recompute time-sensitive status without reparsing an unchanged transcript.
+fn refresh_session_status(mut parsed: ParsedSession, modified_ms: i64) -> AgentSession {
+    let age_seconds = (crate::utils::now_ms() - normalize_epoch_ms(modified_ms)).max(0) / 1_000;
+    parsed.session.status = if age_seconds < 100 {
+        SessionStatus::Working
+    } else if age_seconds < 900 {
+        parsed.idle_status
+    } else {
+        SessionStatus::Completed
+    };
+    parsed.session
 }
 
 fn load_desktop_session_metadata(root: &Path) -> HashMap<String, DesktopSessionMetadata> {
@@ -193,7 +277,7 @@ fn parse_session(
     path: &Path,
     modified_ms: i64,
     metadata: Option<&DesktopSessionMetadata>,
-) -> Result<AgentSession, String> {
+) -> Result<ParsedSession, String> {
     let file = File::open(path).map_err(|error| error.to_string())?;
     let mut ai_title = String::new();
     let mut first_user = String::new();
@@ -330,12 +414,9 @@ fn parse_session(
         }
     }
 
-    let age_seconds = (crate::utils::now_ms() - normalize_epoch_ms(modified_ms)).max(0) / 1_000;
-    let status = if age_seconds < 100 {
-        SessionStatus::Working
-    } else if last_type == "user" && age_seconds < 900 {
+    let idle_status = if last_type == "user" {
         SessionStatus::Attention
-    } else if last_type == "assistant" && age_seconds < 900 {
+    } else if last_type == "assistant" {
         SessionStatus::Waiting
     } else {
         SessionStatus::Completed
@@ -356,35 +437,38 @@ fn parse_session(
         title_source
     };
 
-    Ok(AgentSession {
-        id: format!("claude:{session_id}"),
-        provider: ProviderId::Claude,
-        title: if title_source.is_empty() {
-            UiText::message("generated.claudeConversation")
-        } else {
-            UiText::from(truncate(title_source, 74))
+    Ok(ParsedSession {
+        idle_status,
+        session: AgentSession {
+            id: format!("claude:{session_id}"),
+            provider: ProviderId::Claude,
+            title: if title_source.is_empty() {
+                UiText::message("generated.claudeConversation")
+            } else {
+                UiText::from(truncate(title_source, 74))
+            },
+            project: project_name(&cwd),
+            branch: if branch.is_empty() {
+                "—".to_string()
+            } else {
+                branch
+            },
+            model: if model.is_empty() {
+                "Claude".to_string()
+            } else {
+                model
+            },
+            status: SessionStatus::Completed,
+            started_at_ms: normalize_epoch_ms(first_timestamp),
+            updated_at_ms: normalize_epoch_ms(modified_ms),
+            token_count: usages.values().sum(),
+            summary: if summary_source.is_empty() {
+                UiText::message("generated.claudeConversation")
+            } else {
+                UiText::from(truncate(summary_source, 180))
+            },
+            events: events.into_iter().collect(),
         },
-        project: project_name(&cwd),
-        branch: if branch.is_empty() {
-            "—".to_string()
-        } else {
-            branch
-        },
-        model: if model.is_empty() {
-            "Claude".to_string()
-        } else {
-            model
-        },
-        status,
-        started_at_ms: normalize_epoch_ms(first_timestamp),
-        updated_at_ms: normalize_epoch_ms(modified_ms),
-        token_count: usages.values().sum(),
-        summary: if summary_source.is_empty() {
-            UiText::message("generated.claudeConversation")
-        } else {
-            UiText::from(truncate(summary_source, 180))
-        },
-        events: events.into_iter().collect(),
     })
 }
 
@@ -707,6 +791,40 @@ mod tests {
         assert!(sessions
             .iter()
             .all(|session| session.id != "claude:session-10"));
+    }
+
+    #[test]
+    fn invalidates_cached_session_when_transcript_grows() {
+        use std::io::Write;
+
+        let root = std::env::temp_dir().join(format!(
+            "agent-deck-claude-cache-{}-{}",
+            std::process::id(),
+            crate::utils::now_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("temporary cache directory");
+        let path = root.join("session.jsonl");
+        std::fs::write(
+            &path,
+            "{\"type\":\"user\",\"sessionId\":\"cached\",\"message\":{\"content\":\"hello\"}}\n",
+        )
+        .expect("initial transcript");
+
+        let first = cached_session(&path, 1_000, None).expect("first cached session");
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("append transcript");
+        writeln!(
+            file,
+            "{{\"type\":\"assistant\",\"sessionId\":\"cached\",\"message\":{{\"content\":\"updated\"}}}}"
+        )
+        .expect("updated transcript");
+        let second = cached_session(&path, 2_000, None).expect("refreshed cached session");
+        std::fs::remove_dir_all(root).expect("remove cache directory");
+
+        assert_eq!(first.events.len(), 1);
+        assert_eq!(second.events.len(), 2);
     }
 
     #[test]

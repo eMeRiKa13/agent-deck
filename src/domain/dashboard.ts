@@ -71,6 +71,10 @@ export interface DashboardSnapshot {
   refreshedAtMs: number
 }
 
+export interface DashboardSnapshotOptions {
+  includeQuotas?: boolean
+}
+
 export interface ProviderAdapter {
-  getSnapshot(): Promise<DashboardSnapshot>
+  getSnapshot(options?: DashboardSnapshotOptions): Promise<DashboardSnapshot>
 }

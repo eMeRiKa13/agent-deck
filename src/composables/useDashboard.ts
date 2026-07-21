@@ -7,6 +7,7 @@ import type { SupportedLocale } from '@/i18n'
 import { localeTag, translateUiText } from '@/i18n/format'
 
 const POLLING_INTERVAL_MS = 15_000
+const QUOTA_POLLING_INTERVAL_MS = 120_000
 
 export function useDashboard() {
   const adapter = createProviderAdapter()
@@ -18,6 +19,8 @@ export function useDashboard() {
   const refreshing = ref(false)
   const error = ref<string | null>(null)
   let pendingLoad: Promise<void> | null = null
+  let pendingLoadIncludesQuotas = false
+  let queuedQuotaLoad: Promise<void> | null = null
 
   const sessions = computed(() => {
     const tag = localeTag(locale.value as SupportedLocale)
@@ -56,27 +59,48 @@ export function useDashboard() {
         .length ?? 0,
   )
 
-  async function performLoad() {
+  async function performLoad(includeQuotas: boolean) {
     error.value = null
     try {
-      snapshot.value = await adapter.getSnapshot()
+      const nextSnapshot = await adapter.getSnapshot({ includeQuotas })
+      snapshot.value = !includeQuotas && snapshot.value
+        ? { ...nextSnapshot, quotas: snapshot.value.quotas }
+        : nextSnapshot
     } catch (reason) {
       error.value = reason instanceof Error ? reason.message : String(reason)
     }
   }
 
-  function load() {
-    if (pendingLoad) return pendingLoad
-    pendingLoad = performLoad().finally(() => {
-      pendingLoad = null
+  function startLoad(includeQuotas: boolean): Promise<void> {
+    pendingLoadIncludesQuotas = includeQuotas
+    const request = performLoad(includeQuotas).finally(() => {
+      if (pendingLoad === request) {
+        pendingLoad = null
+        pendingLoadIncludesQuotas = false
+      }
     })
-    return pendingLoad
+    pendingLoad = request
+    return request
+  }
+
+  function load(includeQuotas: boolean): Promise<void> {
+    if (!pendingLoad) return startLoad(includeQuotas)
+    if (!includeQuotas || pendingLoadIncludesQuotas) return pendingLoad
+
+    if (!queuedQuotaLoad) {
+      queuedQuotaLoad = pendingLoad
+        .then(() => load(true))
+        .finally(() => {
+          queuedQuotaLoad = null
+        })
+    }
+    return queuedQuotaLoad
   }
 
   async function refresh() {
     refreshing.value = true
     try {
-      await load()
+      await load(true)
     } finally {
       refreshing.value = false
     }
@@ -90,13 +114,18 @@ export function useDashboard() {
     selectedSessionId.value = id
   }
 
-  const { resume: resumePolling } = useTimeoutPoll(load, POLLING_INTERVAL_MS, {
+  const { resume: resumeSessionPolling } = useTimeoutPoll(() => load(false), POLLING_INTERVAL_MS, {
+    immediate: false,
+  })
+
+  const { resume: resumeQuotaPolling } = useTimeoutPoll(() => load(true), QUOTA_POLLING_INTERVAL_MS, {
     immediate: false,
   })
 
   onMounted(async () => {
-    await load()
-    resumePolling()
+    await load(true)
+    resumeSessionPolling()
+    resumeQuotaPolling()
   })
 
   return {
@@ -110,6 +139,7 @@ export function useDashboard() {
     search,
     refreshing,
     pollingIntervalSeconds: POLLING_INTERVAL_MS / 1_000,
+    quotaPollingIntervalSeconds: QUOTA_POLLING_INTERVAL_MS / 1_000,
     error,
     refresh,
     selectProvider,

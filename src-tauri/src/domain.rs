@@ -94,7 +94,7 @@ pub struct SessionEvent {
     pub timestamp_ms: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSession {
     pub id: String,

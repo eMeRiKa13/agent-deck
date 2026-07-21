@@ -1,10 +1,12 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import { DemoProviderAdapter } from '@/data/demo'
-import type { DashboardSnapshot, ProviderAdapter } from '@/domain/dashboard'
+import type { DashboardSnapshot, DashboardSnapshotOptions, ProviderAdapter } from '@/domain/dashboard'
 
 export class TauriProviderAdapter implements ProviderAdapter {
-  async getSnapshot(): Promise<DashboardSnapshot> {
-    return invoke<DashboardSnapshot>('get_dashboard_snapshot')
+  async getSnapshot(options?: DashboardSnapshotOptions): Promise<DashboardSnapshot> {
+    return invoke<DashboardSnapshot>('get_dashboard_snapshot', {
+      includeQuotas: options?.includeQuotas ?? true,
+    })
   }
 }
 

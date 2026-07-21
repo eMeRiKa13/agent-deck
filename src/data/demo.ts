@@ -1,4 +1,4 @@
-import type { DashboardSnapshot, ProviderAdapter, UiMessage } from '@/domain/dashboard'
+import type { DashboardSnapshot, DashboardSnapshotOptions, ProviderAdapter, UiMessage } from '@/domain/dashboard'
 
 const ui = (key: string, params?: UiMessage['params']): UiMessage => ({ key, ...(params ? { params } : {}) })
 const minute = 60_000
@@ -93,7 +93,10 @@ function createSnapshot(): DashboardSnapshot {
 }
 
 export class DemoProviderAdapter implements ProviderAdapter {
-  async getSnapshot(): Promise<DashboardSnapshot> {
-    return createSnapshot()
+  async getSnapshot(options?: DashboardSnapshotOptions): Promise<DashboardSnapshot> {
+    const snapshot = createSnapshot()
+    return options?.includeQuotas === false
+      ? { ...snapshot, quotas: [] }
+      : snapshot
   }
 }
