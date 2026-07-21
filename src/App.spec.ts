@@ -49,6 +49,19 @@ describe('Agent dashboard', () => {
     expect(wrapper.find('.conversation-header h1').text()).toBe('Corriger l’indexation des conversations')
   })
 
+  it('groups refresh timing and polling status in one accessible control', async () => {
+    const wrapper = mountApp()
+    await flushPromises()
+
+    const refreshControl = wrapper.get('[data-refresh-control]')
+    expect(refreshControl.text()).toContain('Mis à jour')
+    expect(refreshControl.text()).toContain('Auto · 15 s')
+    expect(refreshControl.attributes('aria-label')).toContain('actualisation automatique toutes les 15 secondes')
+    expect(wrapper.get('.dashboard-topbar__summary').text()).toContain('agents actifs')
+    expect(wrapper.find('.live-badge').exists()).toBe(false)
+    expect(wrapper.find('.last-refresh').exists()).toBe(false)
+  })
+
   it('keeps the selected detail inside the visible search results', async () => {
     const wrapper = mountApp()
     await flushPromises()
@@ -86,7 +99,7 @@ describe('Agent dashboard', () => {
       .find((row) => row.text().includes('Corriger l’indexation des conversations'))
     await cursorSession?.trigger('click')
     await wrapper.get('.conversation-panel__close').trigger('click')
-    await wrapper.get('[aria-label="Rafraîchir"]').trigger('click')
+    await wrapper.get('[data-refresh-control]').trigger('click')
     await flushPromises()
 
     expect(wrapper.get('[data-session-row]').classes()).not.toContain('session-row--selected')
@@ -103,7 +116,7 @@ describe('Agent dashboard', () => {
 
     const wrapper = mountApp()
     await flushPromises()
-    await wrapper.get('[aria-label="Rafraîchir"]').trigger('click')
+    await wrapper.get('[data-refresh-control]').trigger('click')
     await flushPromises()
 
     expect(wrapper.text()).toContain('Codex')
@@ -314,7 +327,7 @@ describe('Agent dashboard', () => {
     expect(wrapper.get('[data-session-filter]').attributes('aria-expanded')).toBe('false')
     expect(wrapper.get('[data-session-filter]').attributes('aria-haspopup')).toBe('menu')
     expect(wrapper.text()).toContain('Sessions récentes')
-    expect(wrapper.text()).toContain('Actualisation auto · 15 s')
+    expect(wrapper.text()).toContain('Auto · 15 s')
   })
 
   it('filters sessions by one or several statuses and resets with all statuses', async () => {
@@ -478,6 +491,7 @@ describe('Agent dashboard', () => {
     expect(wrapper.text()).toContain('Recent sessions')
     expect(wrapper.text()).toContain('Build the agent dashboard')
     expect(wrapper.text()).not.toContain('Centre de contrôle')
+    expect(wrapper.get('[data-refresh-control]').text()).toContain('Auto · 15s')
     expect(document.documentElement.lang).toBe('en')
     expect(localStorage.getItem(LOCALE_STORAGE_KEY)).toBe('en')
     expect(selector.attributes('aria-label')).toBe('Change language')
