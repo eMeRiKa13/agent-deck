@@ -41,6 +41,16 @@ const isSessionDetailOpen = ref(false)
 const isAboutOpen = ref(false)
 const isSessionDetailModal = computed(() => isCompactDetail.value && isSessionDetailOpen.value)
 const isSessionSelectionVisible = computed(() => !isCompactDetail.value || isSessionDetailOpen.value)
+const lastRefreshTime = computed(() => snapshot.value
+  ? formatRelativeTime(snapshot.value.refreshedAtMs, currentLocale.value, t)
+  : '')
+const refreshControlLabel = computed(() => t('topbar.refreshStatus', {
+  time: lastRefreshTime.value,
+  seconds: pollingIntervalSeconds,
+}))
+const refreshUpdatedLabel = computed(() => refreshing.value
+  ? t('topbar.refreshing')
+  : t('topbar.updated', { time: lastRefreshTime.value }))
 
 watch(isCompactDetail, () => {
   isSessionDetailOpen.value = false
@@ -87,19 +97,32 @@ function openAbout() {
     <main class="dashboard-main">
       <header data-tauri-drag-region class="dashboard-topbar" :inert="isSessionDetailModal">
         <div class="dashboard-topbar__title">
-          <div>
-            <h1>{{ t('topbar.title') }}</h1>
-            <span>
-              {{ t('topbar.activeAgents', { count: activeCount }, activeCount) }} ·
-              {{ t('topbar.requiredActions', { count: attentionCount }, attentionCount) }}
-            </span>
-          </div>
-          <span class="live-badge"><WifiIcon :size="12" /> {{ t('topbar.autoRefresh', { seconds: pollingIntervalSeconds }) }}</span>
+          <h1>{{ t('topbar.title') }}</h1>
+          <span class="dashboard-topbar__summary">
+            {{ t('topbar.activeAgents', { count: activeCount }, activeCount) }} ·
+            {{ t('topbar.requiredActions', { count: attentionCount }, attentionCount) }}
+          </span>
         </div>
         <div class="dashboard-topbar__actions">
-          <span class="last-refresh">{{ t('topbar.updated', { time: formatRelativeTime(snapshot.refreshedAtMs, currentLocale, t) }) }}</span>
-          <button type="button" :class="{ 'is-spinning': refreshing }" :aria-label="t('topbar.refresh')" @click="refresh">
-            <RefreshCwIcon :size="17" />
+          <button
+            type="button"
+            class="refresh-control"
+            :class="{ 'is-spinning': refreshing }"
+            data-refresh-control
+            :aria-label="refreshControlLabel"
+            @click="refresh"
+          >
+            <RefreshCwIcon class="refresh-control__icon" :size="17" aria-hidden="true" />
+            <span class="refresh-control__updated" aria-live="polite">
+              {{ refreshUpdatedLabel }}
+            </span>
+            <span class="refresh-control__separator" aria-hidden="true" />
+            <span class="refresh-control__auto">
+              <WifiIcon :size="12" aria-hidden="true" />
+              <span class="refresh-control__auto-label">
+                {{ t('topbar.autoRefreshCompact', { seconds: pollingIntervalSeconds }) }}
+              </span>
+            </span>
           </button>
           <button type="button" :aria-label="t('topbar.theme')" @click="toggleTheme">
             <SunIcon v-if="isDark" :size="17" />
