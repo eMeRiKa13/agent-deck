@@ -68,7 +68,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
       - run: pnpm audit --audit-level high
       - uses: rustsec/audit-check@v2
         with:
