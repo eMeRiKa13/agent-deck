@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     process::Stdio,
     time::UNIX_EPOCH,
@@ -14,8 +15,9 @@ use tokio::{
 
 use crate::{
     domain::{
-        AgentSession, EventKind, ProviderId, ProviderQuota, ProviderSnapshot, QuotaWindow,
-        SessionEvent, SessionStatus, UiText, UsageCost,
+        ActivityGroup, ActivityItem, ActivityKind, ActivityStatus, AgentSession, ProviderId,
+        ProviderQuota, ProviderSessionDetails, ProviderSnapshot, QuotaWindow, SessionMetrics,
+        SessionStatus, SubagentSummary, TokenUsage, TokenUsageQuality, UiText, UsageCost,
     },
     providers::partial_snapshot,
     utils::{
@@ -38,7 +40,7 @@ pub async fn load(include_quotas: bool) -> Result<ProviderSnapshot, String> {
     partial_snapshot(sessions, quota)
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ThreadRow {
     id: String,
     rollout_path: String,
@@ -48,9 +50,24 @@ struct ThreadRow {
     title: String,
     branch: String,
     model: String,
+    reasoning_effort: String,
     token_count: u64,
     preview: String,
     first_user_message: String,
+    parent_thread_id: Option<String>,
+    agent_nickname: Option<String>,
+    agent_role: Option<String>,
+    agent_path: Option<String>,
+    is_subagent: bool,
+}
+
+struct CodexHistory {
+    activity_groups: Vec<ActivityGroup>,
+    activity_truncated: bool,
+    token_usage: Option<TokenUsage>,
+    context_window_tokens: Option<u64>,
+    last_turn_duration_ms: Option<u64>,
+    collaboration_mode: Option<String>,
 }
 
 // Load the newest visible Codex threads from the most relevant local state database.
@@ -73,12 +90,14 @@ fn load_sessions() -> Result<Vec<AgentSession>, String> {
                     COALESCE(cwd, ''), COALESCE(title, ''),
                     COALESCE(git_branch, ''), COALESCE(model, ''),
                     COALESCE(tokens_used, 0), COALESCE(preview, ''),
-                    COALESCE(first_user_message, '')
+                    COALESCE(first_user_message, ''), COALESCE(reasoning_effort, ''),
+                    COALESCE(source, ''), agent_nickname, agent_role, agent_path,
+                    COALESCE(thread_source, '')
              FROM threads
              WHERE COALESCE(archived, 0) = 0
                AND (COALESCE(title, '') <> '' OR COALESCE(first_user_message, '') <> '')
              ORDER BY COALESCE(updated_at_ms, updated_at * 1000, 0) DESC
-             LIMIT 10",
+             LIMIT 80",
         )
         .map_err(|error| format!("Schéma Codex incompatible : {error}"))?;
 
@@ -96,6 +115,12 @@ fn load_sessions() -> Result<Vec<AgentSession>, String> {
                 token_count: row.get::<_, i64>(8)?.max(0) as u64,
                 preview: row.get(9)?,
                 first_user_message: row.get(10)?,
+                reasoning_effort: row.get(11)?,
+                parent_thread_id: parent_thread_id(&row.get::<_, String>(12)?),
+                agent_nickname: row.get(13)?,
+                agent_role: row.get(14)?,
+                agent_path: row.get(15)?,
+                is_subagent: row.get::<_, String>(16)? == "subagent",
             })
         })
         .map_err(|error| error.to_string())?;
@@ -103,7 +128,61 @@ fn load_sessions() -> Result<Vec<AgentSession>, String> {
     let rows = rows
         .map(|row| row.map_err(|error| error.to_string()))
         .collect::<Result<Vec<_>, _>>()?;
-    rows.into_iter().map(thread_to_session).collect()
+    let roots = rows
+        .iter()
+        .filter(|row| !row.is_subagent)
+        .take(10)
+        .cloned()
+        .collect::<Vec<_>>();
+    roots
+        .into_iter()
+        .map(|row| {
+            let subagents = rows
+                .iter()
+                .filter(|candidate| candidate.parent_thread_id.as_deref() == Some(row.id.as_str()))
+                .map(subagent_summary)
+                .collect();
+            thread_to_session(row, subagents)
+        })
+        .collect()
+}
+
+fn parent_thread_id(source: &str) -> Option<String> {
+    serde_json::from_str::<Value>(source).ok()?["subagent"]["thread_spawn"]["parent_thread_id"]
+        .as_str()
+        .map(str::to_string)
+}
+
+fn status_from_updated_at(updated_at: i64) -> SessionStatus {
+    let age_seconds = (crate::utils::now_ms() - normalize_epoch_ms(updated_at)).max(0) / 1_000;
+    if age_seconds < 100 {
+        SessionStatus::Working
+    } else {
+        SessionStatus::Completed
+    }
+}
+
+fn subagent_summary(row: &ThreadRow) -> SubagentSummary {
+    SubagentSummary {
+        id: row.id.clone(),
+        name: row
+            .agent_nickname
+            .clone()
+            .or_else(|| {
+                row.agent_path
+                    .as_deref()
+                    .and_then(|path| path.rsplit('/').next())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "Sous-agent".to_string()),
+        path: row.agent_path.clone(),
+        role: row.agent_role.clone(),
+        model: non_empty(&row.model),
+        reasoning_effort: non_empty(&row.reasoning_effort),
+        status: status_from_updated_at(row.updated_at),
+        updated_at_ms: normalize_epoch_ms(row.updated_at),
+        token_usage: TokenUsage::total_only(row.token_count),
+    }
 }
 
 // Prefer a readable database with the newest thread instead of relying on path order.
@@ -149,24 +228,38 @@ fn codex_db_rank(path: &Path) -> (bool, i64, u128) {
 }
 
 // Convert one database thread and its recent rollout events into the shared session model.
-fn thread_to_session(row: ThreadRow) -> Result<AgentSession, String> {
+fn thread_to_session(
+    row: ThreadRow,
+    subagents: Vec<SubagentSummary>,
+) -> Result<AgentSession, String> {
     let path = PathBuf::from(&row.rollout_path);
-    let events = if path.exists() {
-        parse_events(&path, row.updated_at)?
+    let history = if path.exists() {
+        parse_history(&path, row.updated_at)?
     } else {
-        Vec::new()
+        CodexHistory {
+            activity_groups: Vec::new(),
+            activity_truncated: false,
+            token_usage: TokenUsage::total_only(row.token_count),
+            context_window_tokens: None,
+            last_turn_duration_ms: None,
+            collaboration_mode: None,
+        }
     };
     let summary_source = [&row.preview, &row.first_user_message, &row.title]
         .into_iter()
         .find(|value| !value.trim().is_empty())
         .map(|value| value.as_str());
     let age_seconds = (crate::utils::now_ms() - normalize_epoch_ms(row.updated_at)).max(0) / 1_000;
-    let last_kind = events.last().map(|event| event.kind);
+    let last_kind = history
+        .activity_groups
+        .last()
+        .and_then(|group| group.items.last())
+        .map(|item| item.kind);
     let status = if age_seconds < 100 {
         SessionStatus::Working
-    } else if matches!(last_kind, Some(EventKind::User)) && age_seconds < 900 {
+    } else if matches!(last_kind, Some(ActivityKind::User)) && age_seconds < 900 {
         SessionStatus::Attention
-    } else if matches!(last_kind, Some(EventKind::Assistant)) && age_seconds < 900 {
+    } else if matches!(last_kind, Some(ActivityKind::Assistant)) && age_seconds < 900 {
         SessionStatus::Waiting
     } else {
         SessionStatus::Completed
@@ -193,83 +286,268 @@ fn thread_to_session(row: ThreadRow) -> Result<AgentSession, String> {
         } else {
             row.branch
         },
-        model: if row.model.is_empty() {
-            "Codex".to_string()
-        } else {
-            row.model
-        },
+        model: non_empty(&row.model),
         status,
         started_at_ms: normalize_epoch_ms(row.created_at),
         updated_at_ms: normalize_epoch_ms(row.updated_at),
-        token_count: row.token_count,
+        token_usage: history
+            .token_usage
+            .or_else(|| TokenUsage::total_only(row.token_count)),
+        metrics: SessionMetrics {
+            turn_count: Some(history.activity_groups.len() as u32),
+            tool_call_count: Some(tool_call_count(&history.activity_groups)),
+            context_window_tokens: history.context_window_tokens,
+            last_turn_duration_ms: history.last_turn_duration_ms,
+            ..SessionMetrics::default()
+        },
+        provider_details: ProviderSessionDetails::Codex {
+            reasoning_effort: non_empty(&row.reasoning_effort),
+            collaboration_mode: history.collaboration_mode,
+            subagents,
+        },
         summary: summary_source
             .map(|value| UiText::from(truncate(value, 180)))
             .unwrap_or_else(|| UiText::message("generated.codexConversation")),
-        events,
+        activity_groups: history.activity_groups,
+        activity_truncated: history.activity_truncated,
     })
 }
 
-// Parse only recent rollout records while surfacing I/O and encoding failures to the provider.
-fn parse_events(path: &Path, fallback_ms: i64) -> Result<Vec<SessionEvent>, String> {
+fn non_empty(value: &str) -> Option<String> {
+    (!value.trim().is_empty()).then(|| value.to_string())
+}
+
+fn tool_call_count(groups: &[ActivityGroup]) -> u32 {
+    groups
+        .iter()
+        .flat_map(|group| &group.items)
+        .filter(|item| item.kind == ActivityKind::Tool)
+        .map(|item| item.count.unwrap_or(1))
+        .sum()
+}
+
+fn timestamp_ms(value: &Value, fallback_ms: i64) -> i64 {
+    event_timestamp_ms(value["timestamp"].as_str(), fallback_ms)
+}
+
+fn activity_item(
+    id: String,
+    kind: ActivityKind,
+    title: UiText,
+    body: UiText,
+    timestamp_ms: i64,
+) -> ActivityItem {
+    ActivityItem {
+        id,
+        kind,
+        title,
+        body,
+        timestamp_ms,
+        status: None,
+        duration_ms: None,
+        count: None,
+    }
+}
+
+fn ensure_group(groups: &mut Vec<ActivityGroup>, fallback_ms: i64, index: usize) -> usize {
+    if groups.last().is_none_or(|group| {
+        matches!(
+            group.status,
+            Some(ActivityStatus::Completed | ActivityStatus::Error | ActivityStatus::Cancelled)
+        )
+    }) {
+        groups.push(ActivityGroup {
+            id: format!("codex-turn-{index}"),
+            started_at_ms: fallback_ms,
+            completed_at_ms: None,
+            status: None,
+            items: Vec::new(),
+        });
+    }
+    groups.len() - 1
+}
+
+fn parse_token_usage(info: &Value) -> Option<TokenUsage> {
+    let usage = &info["total_token_usage"];
+    let total = usage["total_tokens"].as_u64()?;
+    (total > 0).then_some(TokenUsage {
+        quality: TokenUsageQuality::Detailed,
+        total,
+        input: usage["input_tokens"].as_u64(),
+        output: usage["output_tokens"].as_u64(),
+        cached_input: usage["cached_input_tokens"].as_u64(),
+        cache_write_input: usage["cache_write_input_tokens"].as_u64(),
+        reasoning_output: usage["reasoning_output_tokens"].as_u64(),
+    })
+}
+
+// Normalize the recent rollout stream into provider-agnostic activity groups.
+fn parse_history(path: &Path, fallback_ms: i64) -> Result<CodexHistory, String> {
     let lines = tail_lines(path, 512 * 1024)
         .map_err(|error| format!("Historique Codex illisible ({}): {error}", path.display()))?;
-    let mut events = Vec::new();
+    let mut groups = Vec::new();
+    let mut pending_tools: HashMap<String, String> = HashMap::new();
+    let mut token_usage = None;
+    let mut context_window_tokens = None;
+    let mut last_turn_duration_ms = None;
+    let mut collaboration_mode = None;
     for (index, line) in lines.iter().enumerate() {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
         };
         let payload = &value["payload"];
         let payload_type = payload["type"].as_str().unwrap_or_default();
-        let timestamp = value["timestamp"].as_str();
-        let event = match payload_type {
-            "user_message" => payload["message"].as_str().map(|body| {
-                (
-                    EventKind::User,
-                    UiText::message("generated.you"),
-                    UiText::from(truncate(body, 240)),
-                )
-            }),
-            "agent_message" => payload["message"].as_str().map(|body| {
-                (
-                    EventKind::Assistant,
-                    UiText::from("Codex"),
-                    UiText::from(truncate(body, 240)),
-                )
-            }),
-            "custom_tool_call" => Some((
-                EventKind::Tool,
-                payload["name"]
-                    .as_str()
-                    .map(UiText::from)
-                    .unwrap_or_else(|| UiText::message("generated.tool")),
-                UiText::message("generated.localToolExecution"),
-            )),
-            "task_started" => Some((
-                EventKind::System,
-                UiText::message("generated.taskStarted"),
-                UiText::message("generated.taskStartedBody"),
-            )),
-            "task_complete" | "turn_complete" => Some((
-                EventKind::System,
-                UiText::message("generated.taskCompleted"),
-                UiText::message("generated.taskCompletedBody"),
-            )),
-            _ => None,
-        };
-        if let Some((kind, title, body)) = event {
-            events.push(SessionEvent {
-                id: format!("codex-event-{index}"),
-                kind,
-                title,
-                body,
-                timestamp_ms: event_timestamp_ms(timestamp, fallback_ms),
-            });
+        let event_ms = timestamp_ms(&value, fallback_ms);
+        match payload_type {
+            "task_started" => {
+                groups.push(ActivityGroup {
+                    id: payload["turn_id"]
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("codex-turn-{index}")),
+                    started_at_ms: event_ms,
+                    completed_at_ms: None,
+                    status: Some(ActivityStatus::Running),
+                    items: Vec::new(),
+                });
+            }
+            "user_message" if value["type"] == "event_msg" => {
+                if let Some(body) = payload["message"].as_str() {
+                    let group = ensure_group(&mut groups, event_ms, index);
+                    groups[group].status = None;
+                    groups[group].items.push(activity_item(
+                        format!("codex-user-{index}"),
+                        ActivityKind::User,
+                        UiText::message("generated.you"),
+                        UiText::from(truncate(body, 360)),
+                        event_ms,
+                    ));
+                }
+            }
+            "agent_message" if value["type"] == "event_msg" => {
+                if let Some(body) = payload["message"].as_str() {
+                    let group = ensure_group(&mut groups, event_ms, index);
+                    groups[group].status = None;
+                    groups[group].items.push(activity_item(
+                        format!("codex-assistant-{index}"),
+                        ActivityKind::Assistant,
+                        UiText::from("Codex"),
+                        UiText::from(truncate(body, 360)),
+                        event_ms,
+                    ));
+                }
+            }
+            "custom_tool_call" | "function_call" => {
+                let name = payload["name"].as_str().unwrap_or("Outil");
+                let namespace = payload["namespace"].as_str();
+                let label =
+                    namespace.map_or_else(|| name.to_string(), |ns| format!("{ns} · {name}"));
+                let call_id = payload["call_id"].as_str().unwrap_or(name).to_string();
+                let group = ensure_group(&mut groups, event_ms, index);
+                groups[group].status = None;
+                if let Some(existing) = groups[group].items.iter_mut().find(|item| {
+                    item.kind == ActivityKind::Tool && item.title.as_raw() == Some(label.as_str())
+                }) {
+                    existing.count = Some(existing.count.unwrap_or(1) + 1);
+                    pending_tools.insert(call_id, existing.id.clone());
+                } else {
+                    let item_id = format!("codex-tool-{index}");
+                    let mut item = activity_item(
+                        item_id.clone(),
+                        ActivityKind::Tool,
+                        UiText::from(label),
+                        UiText::message("generated.localToolExecution"),
+                        event_ms,
+                    );
+                    item.status = Some(ActivityStatus::Running);
+                    groups[group].items.push(item);
+                    pending_tools.insert(call_id, item_id);
+                }
+            }
+            "custom_tool_call_output" | "function_call_output" => {
+                if let Some(call_id) = payload["call_id"].as_str() {
+                    if let Some(item_id) = pending_tools.remove(call_id) {
+                        if let Some(item) = groups
+                            .iter_mut()
+                            .flat_map(|group| &mut group.items)
+                            .find(|item| item.id == item_id)
+                        {
+                            item.status = Some(ActivityStatus::Completed);
+                        }
+                    }
+                }
+            }
+            "sub_agent_activity" => {
+                let group = ensure_group(&mut groups, event_ms, index);
+                groups[group].status = None;
+                groups[group].items.push(activity_item(
+                    format!("codex-subagent-{index}"),
+                    ActivityKind::Subagent,
+                    UiText::from(
+                        payload["agent_path"]
+                            .as_str()
+                            .and_then(|path| path.rsplit('/').next())
+                            .unwrap_or("Sous-agent"),
+                    ),
+                    UiText::message("generated.subagentActivity"),
+                    event_ms,
+                ));
+            }
+            "task_complete" | "turn_complete" => {
+                let group = ensure_group(&mut groups, event_ms, index);
+                groups[group].completed_at_ms = Some(event_ms);
+                groups[group].status = Some(ActivityStatus::Completed);
+                let duration = payload["duration_ms"].as_u64();
+                last_turn_duration_ms = duration.or(last_turn_duration_ms);
+                if let Some(duration) = duration {
+                    if let Some(item) = groups[group].items.last_mut() {
+                        item.duration_ms = Some(duration);
+                    }
+                }
+            }
+            "turn_aborted" => {
+                let group = ensure_group(&mut groups, event_ms, index);
+                groups[group].items.push(activity_item(
+                    format!("codex-system-{index}"),
+                    ActivityKind::System,
+                    UiText::message("generated.taskCancelled"),
+                    UiText::message("generated.taskCancelledBody"),
+                    event_ms,
+                ));
+                groups[group].completed_at_ms = Some(event_ms);
+                groups[group].status = Some(ActivityStatus::Cancelled);
+            }
+            "token_count" => {
+                token_usage = parse_token_usage(&payload["info"]).or(token_usage);
+                context_window_tokens = payload["info"]["model_context_window"]
+                    .as_u64()
+                    .or(context_window_tokens);
+            }
+            _ => {}
+        }
+        if value["type"] == "turn_context" {
+            collaboration_mode = payload["collaboration_mode"]["mode"]
+                .as_str()
+                .map(str::to_string)
+                .or(collaboration_mode);
         }
     }
-    if events.len() > 6 {
-        events.drain(..events.len() - 6);
+    groups.retain(|group| !group.items.is_empty());
+    let mut activity_truncated = path
+        .metadata()
+        .is_ok_and(|metadata| metadata.len() > 512 * 1024);
+    if groups.len() > 20 {
+        groups.drain(..groups.len() - 20);
+        activity_truncated = true;
     }
-    Ok(events)
+    Ok(CodexHistory {
+        activity_groups: groups,
+        activity_truncated,
+        token_usage,
+        context_window_tokens,
+        last_turn_duration_ms,
+        collaboration_mode,
+    })
 }
 
 // Exchange the minimum RPC messages required to read the authenticated account and its limits.
@@ -620,6 +898,44 @@ mod tests {
         let error = complete_quota_exchange(account, None).expect_err("missing rate limits");
 
         assert!(error.contains("réponse des quotas"));
+    }
+
+    #[test]
+    fn normalizes_rollout_activity_and_detailed_token_usage() {
+        let home = TemporaryHome::new("rollout-history");
+        let path = home.path().join("rollout.jsonl");
+        let rows = [
+            json!({"type":"event_msg","timestamp":"2030-01-01T10:00:00Z","payload":{"type":"user_message","message":"Inspect the project"}}),
+            json!({"type":"response_item","timestamp":"2030-01-01T10:00:01Z","payload":{"type":"function_call","name":"read_file","call_id":"call-1"}}),
+            json!({"type":"response_item","timestamp":"2030-01-01T10:00:02Z","payload":{"type":"function_call_output","call_id":"call-1"}}),
+            json!({"type":"event_msg","timestamp":"2030-01-01T10:00:03Z","payload":{"type":"agent_message","message":"Inspection complete"}}),
+            json!({"type":"event_msg","timestamp":"2030-01-01T10:00:04Z","payload":{"type":"token_count","info":{"model_context_window":200000,"total_token_usage":{"total_tokens":120,"input_tokens":80,"output_tokens":40,"cached_input_tokens":20}}}}),
+            json!({"type":"turn_context","payload":{"collaboration_mode":{"mode":"default"}}}),
+            json!({"type":"event_msg","timestamp":"2030-01-01T10:00:05Z","payload":{"type":"turn_complete","duration_ms":5000}}),
+        ];
+        fs::write(
+            &path,
+            rows.iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .expect("write rollout fixture");
+
+        let history = parse_history(&path, 0).expect("normalized rollout");
+        let group = &history.activity_groups[0];
+        let tool = group
+            .items
+            .iter()
+            .find(|item| item.kind == ActivityKind::Tool)
+            .expect("tool activity");
+
+        assert_eq!(history.activity_groups.len(), 1);
+        assert_eq!(tool.status, Some(ActivityStatus::Completed));
+        assert_eq!(history.token_usage.expect("token usage").total, 120);
+        assert_eq!(history.context_window_tokens, Some(200_000));
+        assert_eq!(history.last_turn_duration_ms, Some(5_000));
+        assert_eq!(history.collaboration_mode.as_deref(), Some("default"));
     }
 
     #[test]

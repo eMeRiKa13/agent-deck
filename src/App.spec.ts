@@ -8,7 +8,13 @@ const mountedWrappers: Array<{ unmount: () => void }> = []
 
 function mountApp(locale: 'fr' | 'en' = 'fr') {
   setAppLocale(locale, false)
-  const wrapper = mount(App, { attachTo: document.body, global: { plugins: [i18n] } })
+  const wrapper = mount(App, {
+    attachTo: document.body,
+    global: {
+      plugins: [i18n],
+      stubs: { teleport: true },
+    },
+  })
   mountedWrappers.push(wrapper)
   return wrapper
 }
@@ -51,6 +57,7 @@ describe('Agent dashboard', () => {
 
     expect(wrapper.findAll('[data-session-row]')).toHaveLength(1)
     expect(wrapper.get('[data-session-row]').classes()).toContain('session-row--selected')
+    await wrapper.get('[data-session-row]').trigger('click')
     expect(wrapper.get('.conversation-header h1').text()).toBe('Corriger l’indexation des conversations')
 
     await wrapper.get('input[type="search"]').setValue('aucun résultat possible')
@@ -81,6 +88,8 @@ describe('Agent dashboard', () => {
     await wrapper.get('[aria-label="Rafraîchir"]').trigger('click')
     await flushPromises()
 
+    expect(wrapper.get('[data-session-row]').classes()).toContain('session-row--selected')
+    await wrapper.get('[data-session-row]').trigger('click')
     expect(wrapper.get('.conversation-header h1').text()).toBe('Construire le tableau de bord agents')
   })
 
@@ -195,16 +204,16 @@ describe('Agent dashboard', () => {
       .findAll('[data-session-row]')
       .find((row) => row.text().includes('Préparer la revue de la pull request'))
     await completedSession?.trigger('click')
-    expect(wrapper.get('.conversation-footer').text()).toContain('Session terminée')
-    expect(wrapper.get('.conversation-footer').text()).toContain('Aucune action n’est requise')
+    expect(wrapper.get('.session-overview__status').text()).toContain('Session terminée')
+    expect(wrapper.get('.session-overview__status').text()).toContain('Aucune action n’est requise')
 
     await wrapper.get('.conversation-panel__close').trigger('click')
     const attentionSession = wrapper
       .findAll('[data-session-row]')
       .find((row) => row.text().includes('Corriger l’indexation des conversations'))
     await attentionSession?.trigger('click')
-    expect(wrapper.get('.conversation-footer').text()).toContain('Validation requise')
-    expect(wrapper.get('.conversation-footer').text()).toContain('Une action de votre part est nécessaire')
+    expect(wrapper.get('.session-overview__status').text()).toContain('Validation requise')
+    expect(wrapper.get('.session-overview__status').text()).toContain('Une action de votre part est nécessaire')
   })
 
   it('traps focus in the compact detail and restores it on close', async () => {
@@ -245,6 +254,30 @@ describe('Agent dashboard', () => {
     expect(wrapper.find('.quota-card__header button').exists()).toBe(false)
     expect(wrapper.find('.profile-button').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('Rythme soutenu')
+  })
+
+  it('shows provider-backed metrics without inventing unavailable token usage', async () => {
+    const wrapper = mountApp()
+    await flushPromises()
+
+    const cursorSession = wrapper
+      .findAll('[data-session-row]')
+      .find((row) => row.text().includes('Corriger l’indexation des conversations'))
+    await cursorSession?.trigger('click')
+
+    expect(wrapper.get('.session-metrics').text()).toContain('Contexte utilisé')
+    expect(wrapper.get('.token-breakdown--empty').text()).toContain('Indisponible')
+    expect(wrapper.get('.token-breakdown--empty').text()).toContain('ne stocke pas cette mesure')
+
+    await wrapper.get('.conversation-panel__close').trigger('click')
+    const codexSession = wrapper
+      .findAll('[data-session-row]')
+      .find((row) => row.text().includes('Construire le tableau de bord agents'))
+    await codexSession?.trigger('click')
+
+    expect(wrapper.get('.session-metrics').text()).toContain('Total tokens')
+    expect(wrapper.find('.token-breakdown--empty').exists()).toBe(false)
+    expect(wrapper.findAll('.activity-group').length).toBeGreaterThan(0)
   })
 
   it('disables unfinished navigation and filtering controls', async () => {
@@ -307,6 +340,7 @@ describe('Agent dashboard', () => {
     await flushPromises()
 
     expect(wrapper.find('.usage-panel').exists()).toBe(true)
+    await wrapper.get('[data-session-row]').trigger('click')
     expect(wrapper.find('.conversation-panel').exists()).toBe(true)
     expect(wrapper.find('.dashboard-workspace').exists()).toBe(true)
     expect(wrapper.findAll('.quota-card')).toHaveLength(3)

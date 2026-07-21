@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     fs::File,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
@@ -13,8 +13,9 @@ use walkdir::WalkDir;
 
 use crate::{
     domain::{
-        AgentSession, EventKind, ProviderId, ProviderQuota, ProviderSnapshot, QuotaWindow,
-        SessionEvent, SessionStatus, UiText, UsageCost,
+        ActivityGroup, ActivityItem, ActivityKind, ActivityStatus, AgentSession, ProviderId,
+        ProviderQuota, ProviderSessionDetails, ProviderSnapshot, QuotaWindow, SessionMetrics,
+        SessionStatus, TokenUsage, TokenUsageQuality, UiText, UsageCost,
     },
     providers::partial_snapshot,
     utils::{
@@ -29,6 +30,8 @@ struct DesktopSessionMetadata {
     title: String,
     cwd: String,
     model: String,
+    effort: String,
+    completed_turns: Option<u32>,
     created_at: i64,
     last_activity_at: i64,
     last_focused_at: i64,
@@ -277,6 +280,8 @@ fn load_desktop_session_metadata(root: &Path) -> HashMap<String, DesktopSessionM
                     title: value["title"].as_str().unwrap_or_default().to_string(),
                     cwd: value["cwd"].as_str().unwrap_or_default().to_string(),
                     model: value["model"].as_str().unwrap_or_default().to_string(),
+                    effort: value["effort"].as_str().unwrap_or_default().to_string(),
+                    completed_turns: value["completedTurns"].as_u64().map(|value| value as u32),
                     created_at: value["createdAt"].as_i64().unwrap_or_default(),
                     last_activity_at: value["lastActivityAt"].as_i64().unwrap_or_default(),
                     last_focused_at: value["lastFocusedAt"].as_i64().unwrap_or_default(),
@@ -287,7 +292,67 @@ fn load_desktop_session_metadata(root: &Path) -> HashMap<String, DesktopSessionM
         .collect()
 }
 
-// Convert a Claude JSONL transcript into the compact dashboard representation.
+#[derive(Clone, Copy, Default)]
+struct ClaudeUsage {
+    input: u64,
+    output: u64,
+    cached_input: u64,
+    cache_write_input: u64,
+}
+
+impl ClaudeUsage {
+    fn from_value(value: &Value) -> Self {
+        Self {
+            input: value["input_tokens"].as_u64().unwrap_or_default(),
+            output: value["output_tokens"].as_u64().unwrap_or_default(),
+            cached_input: value["cache_read_input_tokens"]
+                .as_u64()
+                .unwrap_or_default(),
+            cache_write_input: value["cache_creation_input_tokens"]
+                .as_u64()
+                .unwrap_or_default(),
+        }
+    }
+
+    fn total(self) -> u64 {
+        self.input + self.output + self.cached_input + self.cache_write_input
+    }
+}
+
+fn optional_string(value: &str) -> Option<String> {
+    (!value.trim().is_empty()).then(|| value.to_string())
+}
+
+fn claude_item(
+    id: String,
+    kind: ActivityKind,
+    title: UiText,
+    body: UiText,
+    timestamp_ms: i64,
+) -> ActivityItem {
+    ActivityItem {
+        id,
+        kind,
+        title,
+        body,
+        timestamp_ms,
+        status: None,
+        duration_ms: None,
+        count: None,
+    }
+}
+
+fn claude_group(id: String, timestamp_ms: i64) -> ActivityGroup {
+    ActivityGroup {
+        id,
+        started_at_ms: timestamp_ms,
+        completed_at_ms: None,
+        status: None,
+        items: Vec::new(),
+    }
+}
+
+// Convert a Claude JSONL transcript into normalized turns without exposing thinking content.
 fn parse_session(
     path: &Path,
     modified_ms: i64,
@@ -295,17 +360,20 @@ fn parse_session(
 ) -> Result<ParsedSession, String> {
     let file = File::open(path).map_err(|error| error.to_string())?;
     let mut ai_title = String::new();
+    let mut custom_title = String::new();
     let mut first_user = String::new();
     let mut latest_assistant = String::new();
-    let mut cwd = metadata
-        .map(|metadata| metadata.cwd.clone())
+    let mut mode = String::new();
+    let mut effort = metadata
+        .map(|value| value.effort.clone())
         .unwrap_or_default();
+    let mut cwd = metadata.map(|value| value.cwd.clone()).unwrap_or_default();
     let mut branch = String::new();
     let mut model = metadata
-        .map(|metadata| metadata.model.clone())
+        .map(|value| value.model.clone())
         .unwrap_or_default();
     let mut session_id = metadata
-        .map(|metadata| metadata.session_id.clone())
+        .map(|value| value.session_id.clone())
         .unwrap_or_else(|| {
             path.file_stem()
                 .and_then(|value| value.to_str())
@@ -313,13 +381,15 @@ fn parse_session(
                 .to_string()
         });
     let mut first_timestamp = metadata
-        .map(|metadata| metadata.created_at)
-        .filter(|created| *created > 0)
+        .map(|value| value.created_at)
+        .filter(|value| *value > 0)
         .unwrap_or(modified_ms);
     let mut latest_timestamp = modified_ms;
     let mut last_type = String::new();
-    let mut events = VecDeque::with_capacity(6);
-    let mut usages: HashMap<String, u64> = HashMap::new();
+    let mut activity_groups: Vec<ActivityGroup> = Vec::new();
+    let mut assistant_positions: HashMap<String, (usize, usize)> = HashMap::new();
+    let mut tool_positions: HashMap<String, (usize, usize)> = HashMap::new();
+    let mut usages: HashMap<String, ClaudeUsage> = HashMap::new();
 
     for (index, line) in BufReader::new(file)
         .lines()
@@ -330,9 +400,23 @@ fn parse_session(
             continue;
         };
         let row_type = value["type"].as_str().unwrap_or_default();
-        if row_type == "ai-title" {
-            ai_title = value["aiTitle"].as_str().unwrap_or_default().to_string();
-            continue;
+        match row_type {
+            "ai-title" => {
+                ai_title = value["aiTitle"].as_str().unwrap_or_default().to_string();
+                continue;
+            }
+            "custom-title" => {
+                custom_title = value["customTitle"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                continue;
+            }
+            "mode" => {
+                mode = value["mode"].as_str().unwrap_or_default().to_string();
+                continue;
+            }
+            _ => {}
         }
         if let Some(value) = value["sessionId"].as_str() {
             session_id = value.to_string();
@@ -350,97 +434,186 @@ fn parse_session(
             }
             latest_timestamp = latest_timestamp.max(timestamp_ms);
         }
-
+        let event_ms = event_timestamp_ms(timestamp, latest_timestamp);
         let message = &value["message"];
-        let text = message_text(&message["content"]);
-        let kind = match row_type {
-            "user" if !text.is_empty() => {
+        let content = &message["content"];
+        let text = message_text(content);
+
+        if row_type == "user" {
+            let tool_results = content
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|entry| entry["type"] == "tool_result")
+                .collect::<Vec<_>>();
+            for result in &tool_results {
+                if let Some(tool_id) = result["tool_use_id"].as_str() {
+                    if let Some(&(group_index, item_index)) = tool_positions.get(tool_id) {
+                        activity_groups[group_index].items[item_index].status =
+                            Some(if result["is_error"].as_bool().unwrap_or(false) {
+                                ActivityStatus::Error
+                            } else {
+                                ActivityStatus::Completed
+                            });
+                    }
+                }
+            }
+            if !text.is_empty() && tool_results.is_empty() {
                 if first_user.is_empty() {
                     first_user = text.clone();
                 }
-                Some((
-                    EventKind::User,
+                let id = value["promptId"]
+                    .as_str()
+                    .or_else(|| value["uuid"].as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("claude-turn-{index}"));
+                activity_groups.push(claude_group(id, event_ms));
+                activity_groups.last_mut().unwrap().items.push(claude_item(
+                    format!("claude-user-{index}"),
+                    ActivityKind::User,
                     UiText::message("generated.you"),
-                    UiText::from(text),
-                ))
+                    UiText::from(truncate(&text, 360)),
+                    event_ms,
+                ));
+                last_type = "user".to_string();
             }
-            "assistant" => {
-                if let Some(value) = message["model"].as_str() {
-                    model = value.to_string();
-                }
-                if !text.is_empty() {
-                    latest_assistant = text.clone();
-                }
-                let usage = &message["usage"];
-                if usage.is_object() {
-                    let key = format!(
-                        "{}:{}",
-                        message["id"].as_str().unwrap_or("message"),
-                        value["requestId"].as_str().unwrap_or("request")
-                    );
-                    let total = [
-                        "input_tokens",
-                        "output_tokens",
-                        "cache_creation_input_tokens",
-                        "cache_read_input_tokens",
-                    ]
-                    .into_iter()
-                    .map(|key| usage[key].as_u64().unwrap_or_default())
-                    .sum();
-                    usages.insert(key, total);
-                }
-                if text.is_empty() {
-                    tool_name(&message["content"]).map(|name| {
-                        let mut params = Map::new();
-                        params.insert("name".to_string(), Value::String(name));
-                        (
-                            EventKind::Tool,
-                            UiText::message("generated.claudeTool"),
-                            UiText::message_with("generated.toolUsage", params),
-                        )
-                    })
-                } else {
-                    Some((
-                        EventKind::Assistant,
-                        UiText::from("Claude"),
-                        UiText::from(text),
-                    ))
-                }
-            }
-            _ => None,
-        };
-        if matches!(row_type, "user" | "assistant") {
-            last_type = row_type.to_string();
+            continue;
         }
-        if let Some((kind, title, body)) = kind {
-            if events.len() == 6 {
-                events.pop_front();
+        if row_type != "assistant" {
+            continue;
+        }
+
+        if let Some(value) = message["model"].as_str() {
+            model = value.to_string();
+        }
+        if let Some(value) = value["effort"].as_str() {
+            effort = value.to_string();
+        }
+        if activity_groups.is_empty() {
+            activity_groups.push(claude_group(format!("claude-turn-{index}"), event_ms));
+        }
+        let group_index = activity_groups.len() - 1;
+        let response_key = format!(
+            "{}:{}",
+            message["id"].as_str().unwrap_or("message"),
+            value["requestId"].as_str().unwrap_or("request")
+        );
+        if message["usage"].is_object() {
+            usages.insert(
+                response_key.clone(),
+                ClaudeUsage::from_value(&message["usage"]),
+            );
+        }
+        if !text.is_empty() {
+            latest_assistant = text.clone();
+            if let Some(&(existing_group, item_index)) = assistant_positions.get(&response_key) {
+                let item = &mut activity_groups[existing_group].items[item_index];
+                item.body = UiText::from(truncate(&text, 360));
+                item.timestamp_ms = event_ms;
+            } else {
+                let item_index = activity_groups[group_index].items.len();
+                activity_groups[group_index].items.push(claude_item(
+                    format!("claude-assistant-{index}"),
+                    ActivityKind::Assistant,
+                    UiText::from("Claude"),
+                    UiText::from(truncate(&text, 360)),
+                    event_ms,
+                ));
+                assistant_positions.insert(response_key, (group_index, item_index));
             }
-            events.push_back(SessionEvent {
-                id: format!("claude-event-{index}"),
-                kind,
-                title,
-                body: match body {
-                    UiText::Raw(value) => UiText::from(truncate(&value, 240)),
-                    message => message,
-                },
-                timestamp_ms: event_timestamp_ms(timestamp, latest_timestamp),
-            });
+        }
+        let mut has_tool = false;
+        for block in content
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|entry| entry["type"] == "tool_use")
+        {
+            has_tool = true;
+            let tool_id = block["id"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("claude-tool-{index}"));
+            if tool_positions.contains_key(&tool_id) {
+                continue;
+            }
+            let item_index = activity_groups[group_index].items.len();
+            let mut item = claude_item(
+                tool_id.clone(),
+                ActivityKind::Tool,
+                UiText::from(block["name"].as_str().unwrap_or("Outil Claude")),
+                UiText::message("generated.localToolExecution"),
+                event_ms,
+            );
+            item.status = Some(ActivityStatus::Running);
+            activity_groups[group_index].items.push(item);
+            tool_positions.insert(tool_id, (group_index, item_index));
+        }
+        if !text.is_empty() || has_tool {
+            last_type = "assistant".to_string();
         }
     }
 
-    let idle_status = if last_type == "user" {
-        SessionStatus::Attention
-    } else if last_type == "assistant" {
-        SessionStatus::Waiting
-    } else {
-        SessionStatus::Completed
+    for group in &mut activity_groups {
+        group.completed_at_ms = group.items.last().map(|item| item.timestamp_ms);
+        group.status = Some(
+            if group
+                .items
+                .iter()
+                .any(|item| item.status == Some(ActivityStatus::Error))
+            {
+                ActivityStatus::Error
+            } else {
+                ActivityStatus::Completed
+            },
+        );
+    }
+    let tool_call_count = activity_groups
+        .iter()
+        .flat_map(|group| &group.items)
+        .filter(|item| item.kind == ActivityKind::Tool)
+        .count() as u32;
+    let tool_error_count = activity_groups
+        .iter()
+        .flat_map(|group| &group.items)
+        .filter(|item| item.status == Some(ActivityStatus::Error))
+        .count() as u32;
+    let total_turn_count = activity_groups.len() as u32;
+    let mut activity_truncated = false;
+    if activity_groups.len() > 20 {
+        activity_groups.drain(..activity_groups.len() - 20);
+        activity_truncated = true;
+    }
+    let usage = usages
+        .values()
+        .copied()
+        .fold(ClaudeUsage::default(), |total, value| ClaudeUsage {
+            input: total.input + value.input,
+            output: total.output + value.output,
+            cached_input: total.cached_input + value.cached_input,
+            cache_write_input: total.cache_write_input + value.cache_write_input,
+        });
+    let token_usage = (usage.total() > 0).then_some(TokenUsage {
+        quality: TokenUsageQuality::Detailed,
+        total: usage.total(),
+        input: Some(usage.input),
+        output: Some(usage.output),
+        cached_input: Some(usage.cached_input),
+        cache_write_input: Some(usage.cache_write_input),
+        reasoning_output: None,
+    });
+    let idle_status = match last_type.as_str() {
+        "user" => SessionStatus::Attention,
+        "assistant" => SessionStatus::Waiting,
+        _ => SessionStatus::Completed,
     };
     let desktop_title = metadata
-        .map(|metadata| metadata.title.as_str())
+        .map(|value| value.title.as_str())
         .unwrap_or_default();
     let title_source = if !desktop_title.is_empty() {
         desktop_title
+    } else if !custom_title.is_empty() {
+        &custom_title
     } else if !ai_title.is_empty() {
         &ai_title
     } else {
@@ -468,21 +641,31 @@ fn parse_session(
             } else {
                 branch
             },
-            model: if model.is_empty() {
-                "Claude".to_string()
-            } else {
-                model
-            },
+            model: optional_string(&model),
             status: SessionStatus::Completed,
             started_at_ms: normalize_epoch_ms(first_timestamp),
             updated_at_ms: normalize_epoch_ms(modified_ms),
-            token_count: usages.values().sum(),
+            token_usage,
+            metrics: SessionMetrics {
+                turn_count: metadata
+                    .and_then(|value| value.completed_turns)
+                    .or(Some(total_turn_count)),
+                tool_call_count: Some(tool_call_count),
+                tool_error_count: Some(tool_error_count),
+                ..SessionMetrics::default()
+            },
+            provider_details: ProviderSessionDetails::Claude {
+                effort: optional_string(&effort),
+                mode: optional_string(&mode),
+                completed_turns: metadata.and_then(|value| value.completed_turns),
+            },
             summary: if summary_source.is_empty() {
                 UiText::message("generated.claudeConversation")
             } else {
                 UiText::from(truncate(summary_source, 180))
             },
-            events: events.into_iter().collect(),
+            activity_groups,
+            activity_truncated,
         },
     })
 }
@@ -506,16 +689,6 @@ fn message_text(content: &Value) -> String {
         .filter_map(|entry| entry["text"].as_str())
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-// Extract the first tool name when an assistant message contains no textual response.
-fn tool_name(content: &Value) -> Option<String> {
-    content
-        .as_array()?
-        .iter()
-        .find(|entry| entry["type"] == "tool_use")?["name"]
-        .as_str()
-        .map(str::to_string)
 }
 
 struct Credentials {
@@ -852,8 +1025,8 @@ mod tests {
         let second = cached_session(&path, 2_000, None).expect("refreshed cached session");
         std::fs::remove_dir_all(root).expect("remove cache directory");
 
-        assert_eq!(first.events.len(), 1);
-        assert_eq!(second.events.len(), 2);
+        assert_eq!(first.activity_groups.len(), 1);
+        assert_eq!(second.activity_groups[0].items.len(), 2);
     }
 
     #[test]
@@ -869,7 +1042,6 @@ mod tests {
         let content =
             json!([{"type": "text", "text": "Bonjour"}, {"type": "tool_use", "name": "Read"}]);
         assert_eq!(message_text(&content), "Bonjour");
-        assert_eq!(tool_name(&content).as_deref(), Some("Read"));
     }
 
     #[test]
@@ -879,6 +1051,8 @@ mod tests {
             title: "Session active".to_string(),
             cwd: "/tmp/project".to_string(),
             model: "claude-test".to_string(),
+            effort: "high".to_string(),
+            completed_turns: Some(1),
             created_at: 100,
             last_activity_at: 200,
             last_focused_at: 300,

@@ -41,6 +41,26 @@ export function formatEventTime(timestampMs: number, locale: SupportedLocale): s
   return new Intl.DateTimeFormat(localeTag(locale), { hour: '2-digit', minute: '2-digit' }).format(timestampMs)
 }
 
+/** Format large local counters without suggesting more precision than the source provides. */
+export function formatCompactNumber(value: number, locale: SupportedLocale): string {
+  return new Intl.NumberFormat(localeTag(locale), {
+    notation: value >= 10_000 ? 'compact' : 'standard',
+    maximumFractionDigits: value >= 10_000 ? 1 : 0,
+  }).format(value)
+}
+
+/** Format provider-reported millisecond durations as a compact dashboard value. */
+export function formatMilliseconds(value: number, locale: SupportedLocale): string {
+  if (value < 1_000) return `${Math.round(value)} ms`
+  const seconds = value / 1_000
+  if (seconds < 60) {
+    return `${new Intl.NumberFormat(localeTag(locale), { maximumFractionDigits: seconds < 10 ? 1 : 0 }).format(seconds)} s`
+  }
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = Math.round(seconds % 60)
+  return `${minutes} min ${String(remainingSeconds).padStart(2, '0')} s`
+}
+
 /** Format a quota reset deadline with its localized prefix. */
 export function formatResetTime(timestampMs: number, locale: SupportedLocale, t: ComposerTranslation): string {
   const date = new Intl.DateTimeFormat(localeTag(locale), {

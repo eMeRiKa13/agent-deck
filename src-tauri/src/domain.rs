@@ -57,7 +57,7 @@ pub enum ProviderId {
     Cursor,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SessionStatus {
     Working,
@@ -66,13 +66,30 @@ pub enum SessionStatus {
     Attention,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum EventKind {
+pub enum ActivityKind {
     User,
     Assistant,
     Tool,
     System,
+    Subagent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ActivityStatus {
+    Running,
+    Completed,
+    Error,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TokenUsageQuality {
+    Detailed,
+    TotalOnly,
 }
 
 #[derive(Debug, Serialize)]
@@ -88,12 +105,135 @@ pub struct ProviderDefinition {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionEvent {
+pub struct TokenUsage {
+    pub quality: TokenUsageQuality,
+    pub total: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_input: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_input: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_output: Option<u64>,
+}
+
+impl TokenUsage {
+    pub fn total_only(total: u64) -> Option<Self> {
+        (total > 0).then_some(Self {
+            quality: TokenUsageQuality::TotalOnly,
+            total,
+            input: None,
+            output: None,
+            cached_input: None,
+            cache_write_input: None,
+            reasoning_output: None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMetrics {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_error_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_usage_percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_turn_duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_changed: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lines_added: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lines_removed: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentSummary {
     pub id: String,
-    pub kind: EventKind,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    pub status: SessionStatus,
+    pub updated_at_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<TokenUsage>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(
+    tag = "provider",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ProviderSessionDetails {
+    Codex {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning_effort: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        collaboration_mode: Option<String>,
+        subagents: Vec<SubagentSummary>,
+    },
+    Claude {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        completed_turns: Option<u32>,
+    },
+    Cursor {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        force_mode: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        unified_mode: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityItem {
+    pub id: String,
+    pub kind: ActivityKind,
     pub title: UiText,
     pub body: UiText,
     pub timestamp_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<ActivityStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityGroup {
+    pub id: String,
+    pub started_at_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<ActivityStatus>,
+    pub items: Vec<ActivityItem>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -104,13 +244,18 @@ pub struct AgentSession {
     pub title: UiText,
     pub project: UiText,
     pub branch: String,
-    pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub status: SessionStatus,
     pub started_at_ms: i64,
     pub updated_at_ms: i64,
-    pub token_count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<TokenUsage>,
+    pub metrics: SessionMetrics,
+    pub provider_details: ProviderSessionDetails,
     pub summary: UiText,
-    pub events: Vec<SessionEvent>,
+    pub activity_groups: Vec<ActivityGroup>,
+    pub activity_truncated: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -210,19 +355,39 @@ mod tests {
                 title: UiText::from("Dashboard contract"),
                 project: UiText::message("generated.localProject"),
                 branch: "main".to_string(),
-                model: "gpt-5".to_string(),
+                model: Some("gpt-5".to_string()),
                 status: SessionStatus::Working,
                 started_at_ms: 1_000,
                 updated_at_ms: 2_000,
-                token_count: 42,
+                token_usage: TokenUsage::total_only(42),
+                metrics: SessionMetrics {
+                    turn_count: Some(1),
+                    tool_call_count: Some(0),
+                    ..SessionMetrics::default()
+                },
+                provider_details: ProviderSessionDetails::Codex {
+                    reasoning_effort: Some("high".to_string()),
+                    collaboration_mode: Some("default".to_string()),
+                    subagents: Vec::new(),
+                },
                 summary: UiText::from("Contract fixture"),
-                events: vec![SessionEvent {
-                    id: "event-1".to_string(),
-                    kind: EventKind::Assistant,
-                    title: UiText::from("Codex"),
-                    body: UiText::from("Ready"),
-                    timestamp_ms: 2_000,
+                activity_groups: vec![ActivityGroup {
+                    id: "turn-1".to_string(),
+                    started_at_ms: 1_000,
+                    completed_at_ms: Some(2_000),
+                    status: Some(ActivityStatus::Completed),
+                    items: vec![ActivityItem {
+                        id: "event-1".to_string(),
+                        kind: ActivityKind::Assistant,
+                        title: UiText::from("Codex"),
+                        body: UiText::from("Ready"),
+                        timestamp_ms: 2_000,
+                        status: None,
+                        duration_ms: None,
+                        count: None,
+                    }],
                 }],
+                activity_truncated: false,
             }],
             quotas: vec![ProviderQuota {
                 provider: ProviderId::Codex,
@@ -267,15 +432,29 @@ mod tests {
                     "status": "working",
                     "startedAtMs": 1_000,
                     "updatedAtMs": 2_000,
-                    "tokenCount": 42,
+                    "tokenUsage": {"quality": "totalOnly", "total": 42},
+                    "metrics": {"turnCount": 1, "toolCallCount": 0},
+                    "providerDetails": {
+                        "provider": "codex",
+                        "reasoningEffort": "high",
+                        "collaborationMode": "default",
+                        "subagents": []
+                    },
                     "summary": "Contract fixture",
-                    "events": [{
-                        "id": "event-1",
-                        "kind": "assistant",
-                        "title": "Codex",
-                        "body": "Ready",
-                        "timestampMs": 2_000
-                    }]
+                    "activityGroups": [{
+                        "id": "turn-1",
+                        "startedAtMs": 1_000,
+                        "completedAtMs": 2_000,
+                        "status": "completed",
+                        "items": [{
+                            "id": "event-1",
+                            "kind": "assistant",
+                            "title": "Codex",
+                            "body": "Ready",
+                            "timestampMs": 2_000
+                        }]
+                    }],
+                    "activityTruncated": false
                 }],
                 "quotas": [{
                     "provider": "codex",

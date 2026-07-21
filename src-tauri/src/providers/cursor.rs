@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rusqlite::{types::ValueRef, Connection, OpenFlags};
@@ -6,8 +6,9 @@ use serde_json::Value;
 
 use crate::{
     domain::{
-        AgentSession, EventKind, ProviderId, ProviderQuota, ProviderSnapshot, QuotaWindow,
-        SessionEvent, SessionStatus, UiText, UsageCost,
+        ActivityGroup, ActivityItem, ActivityKind, ActivityStatus, AgentSession, ProviderId,
+        ProviderQuota, ProviderSessionDetails, ProviderSnapshot, QuotaWindow, SessionMetrics,
+        SessionStatus, TokenUsage, TokenUsageQuality, UiText, UsageCost,
     },
     providers::partial_snapshot,
     utils::{
@@ -127,7 +128,14 @@ fn sessions_from_headers(
     let mut warnings = Vec::new();
     for header in headers {
         match header_to_session(connection, header) {
-            Ok(session) => sessions.push(session),
+            Ok((session, skipped_bubbles)) => {
+                sessions.push(session);
+                if skipped_bubbles > 0 {
+                    warnings.push(format!(
+                        "{skipped_bubbles} bulles Cursor invalides ignorées"
+                    ));
+                }
+            }
             Err(error) => warnings.push(error),
         }
     }
@@ -140,30 +148,35 @@ fn sessions_from_headers(
     ))
 }
 
-fn header_to_session(connection: &Connection, row: HeaderRow) -> Result<AgentSession, String> {
+fn header_to_session(
+    connection: &Connection,
+    row: HeaderRow,
+) -> Result<(AgentSession, usize), String> {
     let header: Value = serde_json::from_str(&row.value)
         .map_err(|error| format!("En-tête Cursor {} invalide : {error}", row.composer_id))?;
-    let (events, token_count, last_type) = load_bubbles(connection, &row.composer_id)?;
+    let history = load_bubbles(connection, &row.composer_id)?;
     let name = header["name"]
         .as_str()
         .or_else(|| header["subtitle"].as_str())
         .filter(|value| !value.trim().is_empty())
         .unwrap_or("Conversation Cursor");
-    let summary = events
-        .iter()
-        .rev()
-        .find(|event| matches!(event.kind, EventKind::Assistant))
-        .and_then(|event| event.body.as_raw())
+    let summary = history
+        .latest_assistant
+        .as_deref()
         .or_else(|| header["subtitle"].as_str())
         .unwrap_or(name);
-    let workspace = header["workspaceIdentifier"]
+    let workspace = header["workspaceIdentifier"]["uri"]
         .as_str()
+        .or_else(|| header["workspaceIdentifier"]["id"].as_str())
+        .map(|value| value.strip_prefix("file://").unwrap_or(value))
         .filter(|value| !value.is_empty())
         .unwrap_or(&row.workspace_id);
     let branch = header["trackedGitRepos"]
         .as_array()
         .and_then(|repos| repos.first())
-        .and_then(|repo| repo["branch"].as_str().or_else(|| repo["name"].as_str()))
+        .and_then(|repo| repo["branches"].as_array())
+        .and_then(|branches| branches.first())
+        .and_then(|branch| branch["branchName"].as_str())
         .unwrap_or("—")
         .to_string();
     let age_seconds = (crate::utils::now_ms() - normalize_epoch_ms(row.updated_at)).max(0) / 1_000;
@@ -175,45 +188,122 @@ fn header_to_session(connection: &Connection, row: HeaderRow) -> Result<AgentSes
         SessionStatus::Attention
     } else if age_seconds < 100 {
         SessionStatus::Working
-    } else if last_type == Some(2) && age_seconds < 900 {
+    } else if history.last_type == Some(2) && age_seconds < 900 {
         SessionStatus::Waiting
     } else {
         SessionStatus::Completed
     };
 
-    Ok(AgentSession {
-        id: format!("cursor:{}", row.composer_id),
-        provider: ProviderId::Cursor,
-        title: if name == "Conversation Cursor" {
-            UiText::message("generated.cursorConversation")
-        } else {
-            UiText::from(truncate(name, 74))
+    Ok((
+        AgentSession {
+            id: format!("cursor:{}", row.composer_id),
+            provider: ProviderId::Cursor,
+            title: if name == "Conversation Cursor" {
+                UiText::message("generated.cursorConversation")
+            } else {
+                UiText::from(truncate(name, 74))
+            },
+            project: project_name(workspace),
+            branch,
+            model: history.model,
+            status,
+            started_at_ms: normalize_epoch_ms(row.created_at),
+            updated_at_ms: normalize_epoch_ms(row.updated_at),
+            token_usage: history.token_usage,
+            metrics: SessionMetrics {
+                turn_count: Some(history.turn_count),
+                tool_call_count: Some(history.tool_call_count),
+                tool_error_count: Some(history.tool_error_count),
+                context_usage_percent: header["contextUsagePercent"].as_f64(),
+                last_turn_duration_ms: history.last_turn_duration_ms,
+                thinking_duration_ms: history.thinking_duration_ms,
+                files_changed: header["filesChangedCount"]
+                    .as_u64()
+                    .map(|value| value as u32),
+                lines_added: header["totalLinesAdded"].as_u64().map(|value| value as u32),
+                lines_removed: header["totalLinesRemoved"]
+                    .as_u64()
+                    .map(|value| value as u32),
+                ..SessionMetrics::default()
+            },
+            provider_details: ProviderSessionDetails::Cursor {
+                force_mode: optional_string(header["forceMode"].as_str()),
+                unified_mode: optional_string(header["unifiedMode"].as_str()),
+            },
+            summary: if summary == "Conversation Cursor" {
+                UiText::message("generated.cursorConversation")
+            } else {
+                UiText::from(truncate(summary, 180))
+            },
+            activity_groups: history.activity_groups,
+            activity_truncated: history.activity_truncated,
         },
-        project: project_name(workspace),
-        branch,
-        model: header["forceMode"]
-            .as_str()
-            .or_else(|| header["unifiedMode"].as_str())
-            .unwrap_or("Cursor Agent")
-            .to_string(),
-        status,
-        started_at_ms: normalize_epoch_ms(row.created_at),
-        updated_at_ms: normalize_epoch_ms(row.updated_at),
-        token_count,
-        summary: if summary == "Conversation Cursor" {
-            UiText::message("generated.cursorConversation")
-        } else {
-            UiText::from(truncate(summary, 180))
-        },
-        events,
-    })
+        history.skipped_bubbles,
+    ))
 }
 
-// Count every bubble while exposing only the six most recent display events.
-fn load_bubbles(
-    connection: &Connection,
-    composer_id: &str,
-) -> Result<(Vec<SessionEvent>, u64, Option<i64>), String> {
+struct CursorHistory {
+    activity_groups: Vec<ActivityGroup>,
+    activity_truncated: bool,
+    token_usage: Option<TokenUsage>,
+    model: Option<String>,
+    latest_assistant: Option<String>,
+    last_type: Option<i64>,
+    turn_count: u32,
+    tool_call_count: u32,
+    tool_error_count: u32,
+    last_turn_duration_ms: Option<u64>,
+    thinking_duration_ms: Option<u64>,
+    skipped_bubbles: usize,
+}
+
+fn optional_string(value: Option<&str>) -> Option<String> {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+}
+
+fn cursor_item(
+    id: String,
+    kind: ActivityKind,
+    title: UiText,
+    body: UiText,
+    timestamp_ms: i64,
+) -> ActivityItem {
+    ActivityItem {
+        id,
+        kind,
+        title,
+        body,
+        timestamp_ms,
+        status: None,
+        duration_ms: None,
+        count: None,
+    }
+}
+
+fn cursor_group(id: String, timestamp_ms: i64) -> ActivityGroup {
+    ActivityGroup {
+        id,
+        started_at_ms: timestamp_ms,
+        completed_at_ms: None,
+        status: None,
+        items: Vec::new(),
+    }
+}
+
+fn cursor_tool_status(value: Option<&str>) -> Option<ActivityStatus> {
+    match value {
+        Some("completed") => Some(ActivityStatus::Completed),
+        Some("error") => Some(ActivityStatus::Error),
+        Some("cancelled") => Some(ActivityStatus::Cancelled),
+        Some(_) => Some(ActivityStatus::Running),
+        None => None,
+    }
+}
+
+// Normalize fragmented Cursor bubbles into recent user turns and provider-aware activity.
+fn load_bubbles(connection: &Connection, composer_id: &str) -> Result<CursorHistory, String> {
     let mut statement = connection
         .prepare(
             "SELECT value FROM cursorDiskKV
@@ -239,57 +329,185 @@ fn load_bubbles(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Bulle Cursor illisible : {error}"))?;
 
+    let mut skipped_bubbles = 0;
     let mut parsed = values
         .into_iter()
-        .map(|value| {
-            let text = String::from_utf8(value)
-                .map_err(|error| format!("Bulle Cursor non UTF-8 : {error}"))?;
-            serde_json::from_str::<Value>(&text)
-                .map_err(|error| format!("Bulle Cursor JSON invalide : {error}"))
+        .filter_map(|value| {
+            let text = match String::from_utf8(value) {
+                Ok(value) => value,
+                Err(_) => {
+                    skipped_bubbles += 1;
+                    return None;
+                }
+            };
+            match serde_json::from_str::<Value>(&text) {
+                Ok(value) => Some(value),
+                Err(_) => {
+                    skipped_bubbles += 1;
+                    None
+                }
+            }
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Vec<_>>();
     parsed.sort_by_key(|value| value["createdAt"].as_i64().unwrap_or_default());
-    let token_count = parsed
+    let input_tokens = parsed
         .iter()
         .map(|value| {
             value["tokenCount"]["inputTokens"]
                 .as_u64()
                 .unwrap_or_default()
-                + value["tokenCount"]["outputTokens"]
-                    .as_u64()
-                    .unwrap_or_default()
         })
-        .sum();
+        .sum::<u64>();
+    let output_tokens = parsed
+        .iter()
+        .map(|value| {
+            value["tokenCount"]["outputTokens"]
+                .as_u64()
+                .unwrap_or_default()
+        })
+        .sum::<u64>();
+    let token_usage = (input_tokens + output_tokens > 0).then_some(TokenUsage {
+        quality: TokenUsageQuality::Detailed,
+        total: input_tokens + output_tokens,
+        input: Some(input_tokens),
+        output: Some(output_tokens),
+        cached_input: None,
+        cache_write_input: None,
+        reasoning_output: None,
+    });
     let last_type = parsed.last().and_then(|value| value["type"].as_i64());
-    let mut events = parsed
-        .into_iter()
-        .filter_map(|value| {
-            let bubble_type = value["type"].as_i64()?;
-            let body = value["text"]
+    let mut groups: Vec<ActivityGroup> = Vec::new();
+    let mut assistant_positions: HashMap<String, (usize, usize)> = HashMap::new();
+    let mut tool_positions: HashMap<String, (usize, usize)> = HashMap::new();
+    let mut model = None;
+    let mut latest_assistant = None;
+    let mut turn_count = 0;
+    let mut last_turn_duration_ms = None;
+    let mut thinking_duration_ms = None;
+    for (index, value) in parsed.into_iter().enumerate() {
+        let bubble_type = value["type"].as_i64();
+        let timestamp = event_timestamp_ms(None, value["createdAt"].as_i64().unwrap_or_default());
+        let bubble_id = value["bubbleId"].as_str().unwrap_or("bubble");
+        if bubble_type == Some(1) {
+            let Some(body) = value["text"]
                 .as_str()
-                .filter(|value| !value.trim().is_empty())?;
-            let (kind, title) = if bubble_type == 1 {
-                (EventKind::User, UiText::message("generated.you"))
-            } else if bubble_type == 2 {
-                (EventKind::Assistant, UiText::from("Cursor"))
-            } else {
-                return None;
+                .filter(|value| !value.trim().is_empty())
+            else {
+                continue;
             };
-            let id = value["bubbleId"].as_str().unwrap_or("bubble");
-            let timestamp = value["createdAt"].as_i64().unwrap_or_default();
-            Some(SessionEvent {
-                id: format!("cursor-event-{id}"),
-                kind,
-                title,
-                body: UiText::from(truncate(body, 240)),
-                timestamp_ms: event_timestamp_ms(None, timestamp),
-            })
-        })
-        .collect::<Vec<_>>();
-    if events.len() > 6 {
-        events.drain(..events.len() - 6);
+            groups.push(cursor_group(format!("cursor-turn-{bubble_id}"), timestamp));
+            groups.last_mut().unwrap().items.push(cursor_item(
+                format!("cursor-user-{bubble_id}"),
+                ActivityKind::User,
+                UiText::message("generated.you"),
+                UiText::from(truncate(body, 360)),
+                timestamp,
+            ));
+            turn_count += 1;
+            continue;
+        }
+        if bubble_type != Some(2) {
+            continue;
+        }
+        if groups.is_empty() {
+            groups.push(cursor_group(format!("cursor-turn-{index}"), timestamp));
+        }
+        let group_index = groups.len() - 1;
+        model = optional_string(value["modelInfo"]["modelName"].as_str()).or(model);
+        last_turn_duration_ms = value["turnDurationMs"].as_u64().or(last_turn_duration_ms);
+        thinking_duration_ms = value["thinkingDurationMs"]
+            .as_u64()
+            .or(thinking_duration_ms);
+        if let Some(body) = value["text"]
+            .as_str()
+            .filter(|value| !value.trim().is_empty())
+        {
+            latest_assistant = Some(body.to_string());
+            let key = value["requestId"].as_str().unwrap_or(bubble_id).to_string();
+            if let Some(&(existing_group, item_index)) = assistant_positions.get(&key) {
+                let item = &mut groups[existing_group].items[item_index];
+                item.body = UiText::from(truncate(body, 360));
+                item.timestamp_ms = timestamp;
+            } else {
+                let item_index = groups[group_index].items.len();
+                groups[group_index].items.push(cursor_item(
+                    format!("cursor-assistant-{bubble_id}"),
+                    ActivityKind::Assistant,
+                    UiText::from("Cursor"),
+                    UiText::from(truncate(body, 360)),
+                    timestamp,
+                ));
+                assistant_positions.insert(key, (group_index, item_index));
+            }
+        }
+        if value["toolFormerData"].is_object() {
+            let tool = &value["toolFormerData"];
+            let call_id = tool["toolCallId"].as_str().unwrap_or(bubble_id).to_string();
+            let name = tool["name"]
+                .as_str()
+                .or_else(|| tool["tool"].as_str())
+                .unwrap_or("Outil Cursor");
+            let status = cursor_tool_status(tool["status"].as_str());
+            if let Some(&(existing_group, item_index)) = tool_positions.get(&call_id) {
+                groups[existing_group].items[item_index].status = status;
+            } else {
+                let item_index = groups[group_index].items.len();
+                let mut item = cursor_item(
+                    call_id.clone(),
+                    ActivityKind::Tool,
+                    UiText::from(name),
+                    UiText::message("generated.localToolExecution"),
+                    timestamp,
+                );
+                item.status = status;
+                groups[group_index].items.push(item);
+                tool_positions.insert(call_id, (group_index, item_index));
+            }
+        }
     }
-    Ok((events, token_count, last_type))
+    for group in &mut groups {
+        group.completed_at_ms = group.items.last().map(|item| item.timestamp_ms);
+        group.status = Some(
+            if group
+                .items
+                .iter()
+                .any(|item| item.status == Some(ActivityStatus::Error))
+            {
+                ActivityStatus::Error
+            } else {
+                ActivityStatus::Completed
+            },
+        );
+    }
+    let tool_call_count = groups
+        .iter()
+        .flat_map(|group| &group.items)
+        .filter(|item| item.kind == ActivityKind::Tool)
+        .count() as u32;
+    let tool_error_count = groups
+        .iter()
+        .flat_map(|group| &group.items)
+        .filter(|item| item.status == Some(ActivityStatus::Error))
+        .count() as u32;
+    let mut activity_truncated = false;
+    if groups.len() > 20 {
+        groups.drain(..groups.len() - 20);
+        activity_truncated = true;
+    }
+    Ok(CursorHistory {
+        activity_groups: groups,
+        activity_truncated,
+        token_usage,
+        model,
+        latest_assistant,
+        last_type,
+        turn_count,
+        tool_call_count,
+        tool_error_count,
+        last_turn_duration_ms,
+        thinking_duration_ms,
+        skipped_bubbles,
+    })
 }
 
 // Fetch usage and account metadata concurrently from Cursor's private authenticated endpoints.
@@ -503,7 +721,7 @@ mod tests {
     }
 
     #[test]
-    fn counts_all_bubbles_but_keeps_six_events() {
+    fn groups_all_bubbles_into_user_turns() {
         let connection = Connection::open_in_memory().expect("in-memory database");
         connection
             .execute(
@@ -527,12 +745,14 @@ mod tests {
                 .expect("bubble row");
         }
 
-        let (events, token_count, last_type) =
-            load_bubbles(&connection, "composer").expect("bubble history");
-        assert_eq!(token_count, 8 * 12);
-        assert_eq!(events.len(), 6);
-        assert_eq!(events[0].body.as_raw(), Some("message-2"));
-        assert_eq!(last_type, Some(2));
+        let history = load_bubbles(&connection, "composer").expect("bubble history");
+        assert_eq!(history.token_usage.expect("token usage").total, 8 * 12);
+        assert_eq!(history.activity_groups.len(), 4);
+        assert_eq!(
+            history.activity_groups[1].items[0].body.as_raw(),
+            Some("message-2")
+        );
+        assert_eq!(history.last_type, Some(2));
     }
 
     #[test]
@@ -551,11 +771,12 @@ mod tests {
             )
             .expect("invalid bubble row");
 
-        assert!(load_bubbles(&connection, "composer").is_err());
+        let history = load_bubbles(&connection, "composer").expect("partial bubble history");
+        assert_eq!(history.skipped_bubbles, 1);
     }
 
     #[test]
-    fn preserves_valid_sessions_when_one_conversation_is_corrupt() {
+    fn preserves_session_headers_when_one_conversation_is_corrupt() {
         let connection = Connection::open_in_memory().expect("in-memory database");
         connection
             .execute(
@@ -598,8 +819,10 @@ mod tests {
         let (sessions, warning) =
             sessions_from_headers(&connection, headers).expect("partial Cursor sessions");
 
-        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions.len(), 2);
         assert_eq!(sessions[0].id, "cursor:good");
+        assert_eq!(sessions[1].id, "cursor:broken");
+        assert!(sessions[1].activity_groups.is_empty());
         assert!(warning.is_some());
     }
 

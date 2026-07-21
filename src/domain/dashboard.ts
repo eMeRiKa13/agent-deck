@@ -9,6 +9,10 @@ export interface UiMessage {
 
 export type UiText = string | UiMessage
 
+export type ActivityKind = 'user' | 'assistant' | 'tool' | 'system' | 'subagent'
+export type ActivityStatus = 'running' | 'completed' | 'error' | 'cancelled'
+export type TokenUsageQuality = 'detailed' | 'totalOnly'
+
 export interface ProviderDefinition {
   id: ProviderId
   name: string
@@ -18,12 +22,77 @@ export interface ProviderDefinition {
   error?: UiText | null
 }
 
-export interface SessionEvent {
+export interface TokenUsage {
+  quality: TokenUsageQuality
+  total: number
+  input?: number
+  output?: number
+  cachedInput?: number
+  cacheWriteInput?: number
+  reasoningOutput?: number
+}
+
+export interface SessionMetrics {
+  turnCount?: number
+  toolCallCount?: number
+  toolErrorCount?: number
+  contextWindowTokens?: number
+  contextUsagePercent?: number
+  lastTurnDurationMs?: number
+  thinkingDurationMs?: number
+  filesChanged?: number
+  linesAdded?: number
+  linesRemoved?: number
+}
+
+export interface SubagentSummary {
   id: string
-  kind: 'user' | 'assistant' | 'tool' | 'system'
+  name: string
+  path?: string
+  role?: string
+  model?: string
+  reasoningEffort?: string
+  status: SessionStatus
+  updatedAtMs: number
+  tokenUsage?: TokenUsage
+}
+
+export type ProviderSessionDetails =
+  | {
+      provider: 'codex'
+      reasoningEffort?: string
+      collaborationMode?: string
+      subagents: SubagentSummary[]
+    }
+  | {
+      provider: 'claude'
+      effort?: string
+      mode?: string
+      completedTurns?: number
+    }
+  | {
+      provider: 'cursor'
+      forceMode?: string
+      unifiedMode?: string
+    }
+
+export interface ActivityItem {
+  id: string
+  kind: ActivityKind
   title: UiText
   body: UiText
   timestampMs: number
+  status?: ActivityStatus
+  durationMs?: number
+  count?: number
+}
+
+export interface ActivityGroup {
+  id: string
+  startedAtMs: number
+  completedAtMs?: number
+  status?: ActivityStatus
+  items: ActivityItem[]
 }
 
 export interface AgentSession {
@@ -32,13 +101,16 @@ export interface AgentSession {
   title: UiText
   project: UiText
   branch: string
-  model: string
+  model?: string
   status: SessionStatus
   startedAtMs: number
   updatedAtMs: number
-  tokenCount: number
+  tokenUsage?: TokenUsage
+  metrics: SessionMetrics
+  providerDetails: ProviderSessionDetails
   summary: UiText
-  events: SessionEvent[]
+  activityGroups: ActivityGroup[]
+  activityTruncated: boolean
 }
 
 export interface QuotaWindow {
