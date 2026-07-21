@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { MoonIcon, RefreshCwIcon, SunIcon, WifiIcon } from '@lucide/vue'
+import { CircleAlertIcon, MoonIcon, RefreshCwIcon, SunIcon, WifiIcon } from '@lucide/vue'
 import { onKeyStroke, useColorMode, useMediaQuery } from '@vueuse/core'
 import AboutPanel from '@/components/AboutPanel.vue'
 import AppSidebar from '@/components/AppSidebar.vue'
@@ -16,7 +16,7 @@ import { formatRelativeTime } from '@/i18n/format'
 const { t, locale } = useI18n({ useScope: 'global' })
 const currentLocale = computed(() => locale.value as SupportedLocale)
 
-const mode = useColorMode({ emitAuto: true })
+const mode = useColorMode()
 const {
   snapshot,
   sessions,
@@ -39,10 +39,15 @@ const isCompactDetail = useMediaQuery('(max-width: 1799px)')
 const isSessionDetailOpen = ref(false)
 const isAboutOpen = ref(false)
 const isSessionDetailVisible = computed(() => !isCompactDetail.value || isSessionDetailOpen.value)
+const isSessionDetailModal = computed(() => isCompactDetail.value && isSessionDetailOpen.value)
 
 watch(isCompactDetail, () => {
   isSessionDetailOpen.value = false
 })
+
+watch(selectedSession, (session) => {
+  if (!session) isSessionDetailOpen.value = false
+}, { flush: 'sync' })
 
 onKeyStroke('Escape', () => {
   if (isAboutOpen.value) {
@@ -73,12 +78,13 @@ function openAbout() {
       :providers="snapshot.providers"
       :active-provider="activeProvider"
       :active-count="activeCount"
+      :inert="isSessionDetailModal"
       @select-provider="selectProvider"
       @open-about="openAbout"
     />
 
     <main class="dashboard-main">
-      <header data-tauri-drag-region class="dashboard-topbar">
+      <header data-tauri-drag-region class="dashboard-topbar" :inert="isSessionDetailModal">
         <div class="dashboard-topbar__title">
           <div>
             <h1>{{ t('topbar.title') }}</h1>
@@ -102,11 +108,17 @@ function openAbout() {
         </div>
       </header>
 
+      <div v-if="error" class="refresh-error" role="status" aria-live="polite">
+        <CircleAlertIcon :size="17" aria-hidden="true" />
+        <span>{{ t('app.refreshError', { error }) }}</span>
+      </div>
+
       <div class="dashboard-workspace">
         <SessionList
           v-model:search="search"
           :sessions
           :selected-id="selectedSessionId"
+          :inert="isSessionDetailModal"
           @select="handleSelectSession"
         />
         <button
@@ -120,11 +132,16 @@ function openAbout() {
           v-if="selectedSession"
           :session="selectedSession"
           :compact="isCompactDetail"
+          :open="isSessionDetailOpen"
           :class="{ 'conversation-panel--open': isSessionDetailOpen }"
           :inert="!isSessionDetailVisible"
           @close="isSessionDetailOpen = false"
         />
-        <UsagePanel :quotas="snapshot.quotas" :providers="snapshot.providers" />
+        <UsagePanel
+          :quotas="snapshot.quotas"
+          :providers="snapshot.providers"
+          :inert="isSessionDetailModal"
+        />
       </div>
     </main>
   </div>

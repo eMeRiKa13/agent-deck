@@ -3,6 +3,7 @@ const fr = {
     name: 'Agent Deck',
     loading: 'Chargement des agents…',
     loadError: 'Impossible de lire les données locales : {error}',
+    refreshError: 'La dernière actualisation a échoué : {error}',
   },
   topbar: {
     title: 'Centre de contrôle',
@@ -66,8 +67,12 @@ const fr = {
     events: 'aucun événement | {count} événement | {count} événements',
     workingTitle: 'Agent au travail',
     waitingTitle: 'Session en attente',
+    completedTitle: 'Session terminée',
+    attentionTitle: 'Validation requise',
     workingBody: 'Les événements apparaissent ici en direct',
     waitingBody: 'Une action de votre part peut être nécessaire',
+    completedBody: 'Aucune action n’est requise',
+    attentionBody: 'Une action de votre part est nécessaire',
   },
   status: {
     working: 'En cours',
@@ -204,6 +209,7 @@ const en: MessageShape<typeof fr> = {
     name: 'Agent Deck',
     loading: 'Loading agents…',
     loadError: 'Unable to read local data: {error}',
+    refreshError: 'The latest refresh failed: {error}',
   },
   topbar: {
     title: 'Control center',
@@ -267,8 +273,12 @@ const en: MessageShape<typeof fr> = {
     events: 'no events | {count} event | {count} events',
     workingTitle: 'Agent at work',
     waitingTitle: 'Session waiting',
+    completedTitle: 'Session completed',
+    attentionTitle: 'Review required',
     workingBody: 'Events appear here as they happen',
     waitingBody: 'An action from you may be required',
+    completedBody: 'No action is required',
+    attentionBody: 'An action from you is required',
   },
   status: {
     working: 'Working',

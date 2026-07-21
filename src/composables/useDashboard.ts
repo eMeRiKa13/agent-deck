@@ -1,4 +1,4 @@
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useTimeoutPoll } from '@vueuse/core'
 import { createProviderAdapter } from '@/data/tauri'
@@ -6,14 +6,14 @@ import type { AgentSession, DashboardSnapshot, ProviderId } from '@/domain/dashb
 import type { SupportedLocale } from '@/i18n'
 import { localeTag, translateUiText } from '@/i18n/format'
 
-const adapter = createProviderAdapter()
 const POLLING_INTERVAL_MS = 15_000
 
 export function useDashboard() {
+  const adapter = createProviderAdapter()
   const { t, locale } = useI18n({ useScope: 'global' })
   const snapshot = ref<DashboardSnapshot | null>(null)
   const activeProvider = ref<ProviderId | 'all'>('all')
-  const selectedSessionId = ref('codex-dashboard')
+  const selectedSessionId = ref('')
   const search = ref('')
   const refreshing = ref(false)
   const error = ref<string | null>(null)
@@ -33,10 +33,18 @@ export function useDashboard() {
     })
   })
 
-  const selectedSession = computed<AgentSession | null>(() => {
-    const allSessions = snapshot.value?.sessions ?? []
-    return allSessions.find((session) => session.id === selectedSessionId.value) ?? sessions.value[0] ?? null
-  })
+  const selectedSession = computed<AgentSession | null>(
+    () => sessions.value.find((session) => session.id === selectedSessionId.value) ?? null,
+  )
+
+  watch(
+    sessions,
+    (visibleSessions) => {
+      const selectedIsVisible = visibleSessions.some((session) => session.id === selectedSessionId.value)
+      if (!selectedIsVisible) selectedSessionId.value = visibleSessions[0]?.id ?? ''
+    },
+    { flush: 'sync', immediate: true },
+  )
 
   const activeCount = computed(
     () => snapshot.value?.sessions.filter((session) => session.status === 'working').length ?? 0,
@@ -52,10 +60,6 @@ export function useDashboard() {
     error.value = null
     try {
       snapshot.value = await adapter.getSnapshot()
-      const selectedExists = snapshot.value.sessions.some((session) => session.id === selectedSessionId.value)
-      if (!selectedExists && snapshot.value.sessions[0]) {
-        selectedSessionId.value = snapshot.value.sessions[0].id
-      }
     } catch (reason) {
       error.value = reason instanceof Error ? reason.message : String(reason)
     }
@@ -80,8 +84,6 @@ export function useDashboard() {
 
   function selectProvider(provider: ProviderId | 'all') {
     activeProvider.value = provider
-    const firstMatch = sessions.value[0]
-    if (firstMatch) selectedSessionId.value = firstMatch.id
   }
 
   function selectSession(id: string) {

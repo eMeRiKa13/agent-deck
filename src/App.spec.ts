@@ -1,21 +1,29 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '@/App.vue'
+import { DemoProviderAdapter } from '@/data/demo'
 import { i18n, LOCALE_STORAGE_KEY, setAppLocale } from '@/i18n'
+
+const mountedWrappers: Array<{ unmount: () => void }> = []
 
 function mountApp(locale: 'fr' | 'en' = 'fr') {
   setAppLocale(locale, false)
-  return mount(App, { attachTo: document.body, global: { plugins: [i18n] } })
+  const wrapper = mount(App, { attachTo: document.body, global: { plugins: [i18n] } })
+  mountedWrappers.push(wrapper)
+  return wrapper
 }
 
 describe('Agent dashboard', () => {
   beforeEach(() => {
     localStorage.clear()
+    document.documentElement.className = ''
     document.documentElement.lang = ''
   })
 
   afterEach(() => {
+    mountedWrappers.splice(0).forEach((wrapper) => wrapper.unmount())
     document.body.innerHTML = ''
+    vi.restoreAllMocks()
   })
 
   it('renders the three providers and selects a session', async () => {
@@ -32,6 +40,131 @@ describe('Agent dashboard', () => {
     await cursorSession?.trigger('click')
 
     expect(wrapper.find('.conversation-header h1').text()).toBe('Corriger l’indexation des conversations')
+  })
+
+  it('keeps the selected detail inside the visible search results', async () => {
+    const wrapper = mountApp()
+    await flushPromises()
+
+    await wrapper.get('input[type="search"]').setValue('Corriger l’indexation')
+
+    expect(wrapper.findAll('[data-session-row]')).toHaveLength(1)
+    expect(wrapper.get('[data-session-row]').classes()).toContain('session-row--selected')
+    expect(wrapper.get('.conversation-header h1').text()).toBe('Corriger l’indexation des conversations')
+
+    await wrapper.get('input[type="search"]').setValue('aucun résultat possible')
+
+    expect(wrapper.find('.conversation-panel').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Aucune session ne correspond à cette recherche.')
+  })
+
+  it('selects the first visible session when a refresh removes the current one', async () => {
+    const firstSnapshot = await new DemoProviderAdapter().getSnapshot()
+    const nextSnapshot = {
+      ...firstSnapshot,
+      sessions: firstSnapshot.sessions.filter((session) => session.id !== 'cursor-index'),
+      refreshedAtMs: firstSnapshot.refreshedAtMs + 1_000,
+    }
+    vi.spyOn(DemoProviderAdapter.prototype, 'getSnapshot')
+      .mockResolvedValueOnce(firstSnapshot)
+      .mockResolvedValueOnce(nextSnapshot)
+
+    const wrapper = mountApp()
+    await flushPromises()
+
+    const cursorSession = wrapper
+      .findAll('[data-session-row]')
+      .find((row) => row.text().includes('Corriger l’indexation des conversations'))
+    await cursorSession?.trigger('click')
+    await wrapper.get('.conversation-panel__close').trigger('click')
+    await wrapper.get('[aria-label="Rafraîchir"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.conversation-header h1').text()).toBe('Construire le tableau de bord agents')
+  })
+
+  it('keeps the previous snapshot visible when a refresh fails', async () => {
+    const initialSnapshot = await new DemoProviderAdapter().getSnapshot()
+    vi.spyOn(DemoProviderAdapter.prototype, 'getSnapshot')
+      .mockResolvedValueOnce(initialSnapshot)
+      .mockRejectedValueOnce(new Error('base locale verrouillée'))
+
+    const wrapper = mountApp()
+    await flushPromises()
+    await wrapper.get('[aria-label="Rafraîchir"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Codex')
+    expect(wrapper.get('.refresh-error').attributes('role')).toBe('status')
+    expect(wrapper.get('.refresh-error').text()).toContain('base locale verrouillée')
+  })
+
+  it('uses the resolved system theme when leaving automatic mode', async () => {
+    vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({
+      matches: query === '(prefers-color-scheme: dark)' || query === '(max-width: 1799px)',
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(() => true),
+    }))
+
+    const wrapper = mountApp()
+    await flushPromises()
+    expect(document.documentElement.classList.contains('dark')).toBe(true)
+
+    await wrapper.get('[aria-label="Changer de thème"]').trigger('click')
+    await flushPromises()
+
+    expect(document.documentElement.classList.contains('dark')).toBe(false)
+    expect(localStorage.getItem('vueuse-color-scheme')).toBe('light')
+  })
+
+  it('describes completed and attention states without presenting them as waiting', async () => {
+    const wrapper = mountApp()
+    await flushPromises()
+
+    const completedSession = wrapper
+      .findAll('[data-session-row]')
+      .find((row) => row.text().includes('Préparer la revue de la pull request'))
+    await completedSession?.trigger('click')
+    expect(wrapper.get('.conversation-footer').text()).toContain('Session terminée')
+    expect(wrapper.get('.conversation-footer').text()).toContain('Aucune action n’est requise')
+
+    await wrapper.get('.conversation-panel__close').trigger('click')
+    const attentionSession = wrapper
+      .findAll('[data-session-row]')
+      .find((row) => row.text().includes('Corriger l’indexation des conversations'))
+    await attentionSession?.trigger('click')
+    expect(wrapper.get('.conversation-footer').text()).toContain('Validation requise')
+    expect(wrapper.get('.conversation-footer').text()).toContain('Une action de votre part est nécessaire')
+  })
+
+  it('traps focus in the compact detail and restores it on close', async () => {
+    const wrapper = mountApp()
+    await flushPromises()
+
+    const trigger = wrapper
+      .findAll('[data-session-row]')
+      .find((row) => row.text().includes('Corriger l’indexation des conversations'))
+    ;(trigger?.element as HTMLButtonElement | undefined)?.focus()
+    await trigger?.trigger('click')
+    await flushPromises()
+
+    const closeButton = wrapper.get('.conversation-panel__close')
+    expect(document.activeElement).toBe(closeButton.element)
+    expect(wrapper.get('.session-column').attributes('inert')).toBeDefined()
+    expect(wrapper.get('.usage-panel').attributes('inert')).toBeDefined()
+    expect(wrapper.get('.dashboard-topbar').attributes('inert')).toBeDefined()
+
+    await closeButton.trigger('keydown', { key: 'Tab' })
+    expect(document.activeElement).toBe(closeButton.element)
+
+    await closeButton.trigger('click')
+    await flushPromises()
+    expect(document.activeElement).toBe(trigger?.element)
   })
 
   it('keeps the dashboard read-only', async () => {

@@ -8,20 +8,21 @@ import {
   TerminalSquareIcon,
   XIcon,
 } from '@lucide/vue'
-import { computed } from 'vue'
+import { computed, nextTick, onBeforeUnmount, useTemplateRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ProviderMark from '@/components/ProviderMark.vue'
 import StatusPill from '@/components/StatusPill.vue'
-import type { AgentSession, SessionEvent } from '@/domain/dashboard'
+import type { AgentSession, SessionEvent, SessionStatus } from '@/domain/dashboard'
 import type { SupportedLocale } from '@/i18n'
 import { formatDuration, formatEventTime, translateUiText } from '@/i18n/format'
 
 const { t, n, locale } = useI18n({ useScope: 'global' })
 const currentLocale = computed(() => locale.value as SupportedLocale)
 
-const { compact = false } = defineProps<{
+const { session, compact = false, open = false } = defineProps<{
   session: AgentSession
   compact?: boolean
+  open?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -34,14 +35,85 @@ const eventIcons: Record<SessionEvent['kind'], typeof CheckIcon> = {
   tool: TerminalSquareIcon,
   system: RotateCcwIcon,
 }
+
+const statusMessages: Record<SessionStatus, { title: string, body: string }> = {
+  working: { title: 'detail.workingTitle', body: 'detail.workingBody' },
+  waiting: { title: 'detail.waitingTitle', body: 'detail.waitingBody' },
+  completed: { title: 'detail.completedTitle', body: 'detail.completedBody' },
+  attention: { title: 'detail.attentionTitle', body: 'detail.attentionBody' },
+}
+
+const statusMessage = computed(() => statusMessages[session.status])
+const panel = useTemplateRef<HTMLElement>('panel')
+const closeButton = useTemplateRef<HTMLButtonElement>('closeButton')
+let previousActiveElement: HTMLElement | null = null
+
+const focusableSelector = [
+  'button:not([disabled])',
+  '[href]',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',')
+
+watch(
+  () => compact && open,
+  async (isOpen) => {
+    if (isOpen) {
+      previousActiveElement = document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null
+      await nextTick()
+      closeButton.value?.focus()
+      return
+    }
+
+    const elementToRestore = previousActiveElement
+    previousActiveElement = null
+    await nextTick()
+    if (elementToRestore?.isConnected) elementToRestore.focus()
+  },
+  { flush: 'sync' },
+)
+
+onBeforeUnmount(() => {
+  if (previousActiveElement?.isConnected) previousActiveElement.focus()
+})
+
+function handleKeydown(event: KeyboardEvent) {
+  if (!compact || !open) return
+
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    emit('close')
+    return
+  }
+
+  if (event.key !== 'Tab' || !panel.value) return
+
+  const focusable = [...panel.value.querySelectorAll<HTMLElement>(focusableSelector)]
+    .filter((element) => !element.hasAttribute('disabled'))
+  if (!focusable.length) return
+
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last?.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first?.focus()
+  }
+}
 </script>
 
 <template>
   <section
+    ref="panel"
     class="conversation-panel"
     :aria-label="t('detail.aria')"
-    :role="compact ? 'dialog' : undefined"
-    :aria-modal="compact ? 'true' : undefined"
+    :role="compact && open ? 'dialog' : undefined"
+    :aria-modal="compact && open ? 'true' : undefined"
+    @keydown="handleKeydown"
   >
     <header class="conversation-header">
       <div class="conversation-header__identity">
@@ -60,6 +132,7 @@ const eventIcons: Record<SessionEvent['kind'], typeof CheckIcon> = {
       </div>
       <button
         v-if="compact"
+        ref="closeButton"
         type="button"
         class="conversation-panel__close"
         :aria-label="t('detail.close')"
@@ -103,8 +176,8 @@ const eventIcons: Record<SessionEvent['kind'], typeof CheckIcon> = {
           <span />
         </span>
         <div>
-          <strong>{{ t(session.status === 'working' ? 'detail.workingTitle' : 'detail.waitingTitle') }}</strong>
-          <span>{{ t(session.status === 'working' ? 'detail.workingBody' : 'detail.waitingBody') }}</span>
+          <strong>{{ t(statusMessage.title) }}</strong>
+          <span>{{ t(statusMessage.body) }}</span>
         </div>
       </div>
     </footer>
