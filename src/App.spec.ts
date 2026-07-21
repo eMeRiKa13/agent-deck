@@ -135,6 +135,35 @@ describe('Agent dashboard', () => {
     expect(codexProvider?.attributes('title')).toContain('Certaines données Codex sont indisponibles')
   })
 
+  it('keeps a quota warning when no previous quota value exists', async () => {
+    vi.useFakeTimers()
+    const demoSnapshot = await new DemoProviderAdapter().getSnapshot()
+    const initialSnapshot = {
+      ...demoSnapshot,
+      providers: demoSnapshot.providers.map((provider) => provider.id === 'codex'
+        ? { ...provider, error: { key: 'errors.providerPartial', params: { provider: 'Codex' } } }
+        : provider),
+      quotas: demoSnapshot.quotas.filter((quota) => quota.provider !== 'codex'),
+    }
+    vi.spyOn(DemoProviderAdapter.prototype, 'getSnapshot')
+      .mockResolvedValueOnce(initialSnapshot)
+      .mockResolvedValueOnce({
+        ...demoSnapshot,
+        quotas: [],
+        refreshedAtMs: demoSnapshot.refreshedAtMs + 15_000,
+      })
+
+    const wrapper = mountApp()
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(15_000)
+    await flushPromises()
+
+    const codexProvider = wrapper
+      .findAll('.provider-nav-item')
+      .find((provider) => provider.text().includes('Codex'))
+    expect(codexProvider?.attributes('title')).toContain('Certaines données Codex sont indisponibles')
+  })
+
   it('uses the resolved system theme when leaving automatic mode', async () => {
     vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({
       matches: query === '(prefers-color-scheme: dark)' || query === '(max-width: 1799px)',

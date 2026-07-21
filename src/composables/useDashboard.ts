@@ -2,7 +2,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useTimeoutPoll } from '@vueuse/core'
 import { createProviderAdapter } from '@/data/tauri'
-import type { AgentSession, DashboardSnapshot, ProviderId } from '@/domain/dashboard'
+import type { AgentSession, DashboardSnapshot, ProviderId, UiText } from '@/domain/dashboard'
 import type { SupportedLocale } from '@/i18n'
 import { localeTag, translateUiText } from '@/i18n/format'
 
@@ -14,19 +14,18 @@ function mergeDashboardSnapshot(
   previous: DashboardSnapshot | null,
   next: DashboardSnapshot,
   includeQuotas: boolean,
+  quotaErrors: ReadonlyMap<ProviderId, UiText>,
 ): DashboardSnapshot {
   if (!previous) return next
 
   const nextQuotaProviders = new Set(next.quotas.map((quota) => quota.provider))
   const preservedQuotas = previous.quotas.filter((quota) => !nextQuotaProviders.has(quota.provider))
-  const previousProviders = new Map(previous.providers.map((provider) => [provider.id, provider]))
   const providers = includeQuotas
     ? next.providers
     : next.providers.map((provider) => {
-        const hasPreservedQuota = preservedQuotas.some((quota) => quota.provider === provider.id)
-        const previousError = previousProviders.get(provider.id)?.error
-        return hasPreservedQuota && !provider.error && previousError
-          ? { ...provider, error: previousError }
+        const quotaError = quotaErrors.get(provider.id)
+        return !provider.error && quotaError
+          ? { ...provider, error: quotaError }
           : provider
       })
 
@@ -49,6 +48,7 @@ export function useDashboard() {
   let pendingLoad: Promise<void> | null = null
   let pendingLoadIncludesQuotas = false
   let queuedQuotaLoad: Promise<void> | null = null
+  const quotaErrors = new Map<ProviderId, UiText>()
 
   const sessions = computed(() => {
     const tag = localeTag(locale.value as SupportedLocale)
@@ -92,7 +92,19 @@ export function useDashboard() {
     error.value = null
     try {
       const nextSnapshot = await adapter.getSnapshot({ includeQuotas })
-      snapshot.value = mergeDashboardSnapshot(snapshot.value, nextSnapshot, includeQuotas)
+      if (includeQuotas) {
+        const providersWithQuota = new Set(nextSnapshot.quotas.map((quota) => quota.provider))
+        nextSnapshot.providers.forEach((provider) => {
+          if (providersWithQuota.has(provider.id)) {
+            quotaErrors.delete(provider.id)
+          } else if (provider.error) {
+            quotaErrors.set(provider.id, provider.error)
+          } else {
+            quotaErrors.delete(provider.id)
+          }
+        })
+      }
+      snapshot.value = mergeDashboardSnapshot(snapshot.value, nextSnapshot, includeQuotas, quotaErrors)
     } catch (reason) {
       error.value = reason instanceof Error ? reason.message : String(reason)
     }
