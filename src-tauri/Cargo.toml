@@ -2,6 +2,8 @@
 name = "agent-deck"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+repository = "https://github.com/eMeRiKa13/agent-deck"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

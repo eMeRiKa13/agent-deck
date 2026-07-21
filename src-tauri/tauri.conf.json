@@ -3,7 +3,7 @@
   "productName": "Agent Deck",
   "mainBinaryName": "Agent Deck",
   "version": "0.1.0",
-  "identifier": "local.agentdeck.prototype",
+  "identifier": "io.github.emerika13.agentdeck",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://127.0.0.1:1421",

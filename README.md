@@ -2,6 +2,9 @@
 
 Agent Deck is a read-only macOS dashboard that brings your Codex, Claude, and Cursor activity into one place.
 
+Agent Deck is an independent source project. It is not affiliated with,
+endorsed by, or sponsored by OpenAI, Anthropic, Anysphere, GitHub, or Corsair.
+
 It was built specifically for the [CORSAIR XENEON EDGE 14.5-inch LCD touchscreen](https://www.corsair.com/fr/fr/p/monitors/cc-9011311-ww/corsair-xeneon-edge-14-5-lcd-touchscreen-white-cc-9011311-ww). The display’s native 2560 × 720, 32:9 canvas shaped Agent Deck’s three-pane layout and touch-friendly sizing.
 
 ![Agent Deck showing active sessions and usage at 2560 × 720](./agent-deck-2560x720.png)
@@ -27,7 +30,7 @@ On narrower displays, Agent Deck keeps sessions and usage visible while opening 
 
 The interface follows your light or dark system appearance and supports English and French. A manual language choice is stored locally.
 
-## How Agent Deck reads your data
+## Understand the local data boundary
 
 Agent Deck has no account system and no dedicated cloud service. Its Rust adapters read the files and authenticated sessions already created by the installed desktop applications.
 
@@ -37,13 +40,37 @@ Agent Deck has no account system and no dedicated cloud service. Its Rust adapte
 | Claude | `~/.claude/projects` and Claude Desktop session metadata | Local usage history and the Anthropic OAuth usage endpoint when available |
 | Cursor | Cursor’s local `state.vscdb` database | Cursor’s usage summary using the existing local session |
 
-Local databases are opened in read-only mode. Credentials and tokens remain in the Rust backend and are never exposed to the Vue interface.
+Local databases are opened in read-only mode. Conversation titles, summaries,
+activity, project names, and usage measurements are serialized to the local Vue
+interface for display. Credentials and tokens remain in the Rust backend and
+are never serialized to Vue or written by Agent Deck.
 
 > These local formats are implementation details rather than stable public APIs. Updates to Codex, Claude, or Cursor may require adapter changes.
 
-## Run Agent Deck
+### Network access
 
-You need macOS, Node.js 22 or later, pnpm 10, a stable Rust toolchain, and at least one supported app that has already been used on the Mac.
+Agent Deck has no dedicated cloud service and does not upload conversations to
+an Agent Deck server. The Rust backend makes these authenticated requests only
+to retrieve account and quota information:
+
+| Provider | Destination | Purpose |
+| --- | --- | --- |
+| Codex | The local `codex app-server` process | Read the authenticated account and rate limits. The Codex process manages its own provider connection. |
+| Claude | `https://api.anthropic.com/api/oauth/usage` | Read OAuth usage windows when local credentials are available. |
+| Cursor | `https://cursor.com/api/usage-summary` and `https://cursor.com/api/auth/me` | Read plan usage and account metadata using the existing local session. |
+
+The About panel can open allow-listed GitHub, Enchanter, and Corsair pages after
+you select their links. The Vue frontend cannot initiate arbitrary external
+connections.
+
+## Run Agent Deck from source
+
+Agent Deck does not provide an official downloadable binary. Build and run it
+from source. The current release is tested on Apple Silicon; Intel Macs and
+other operating systems are not verified.
+
+You need macOS, Node.js 22 or later, pnpm 10.33, a stable Rust toolchain, and at
+least one supported app that has already been used on the Mac.
 
 ```bash
 git clone https://github.com/eMeRiKa13/agent-deck.git
@@ -72,16 +99,18 @@ pnpm test
 pnpm build
 ```
 
+Run the Rust checks:
+
+```bash
+PATH="$HOME/.cargo/bin:$PATH" cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+PATH="$HOME/.cargo/bin:$PATH" cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+PATH="$HOME/.cargo/bin:$PATH" cargo test --manifest-path src-tauri/Cargo.toml
+```
+
 Build the desktop application:
 
 ```bash
 pnpm build:desktop
-```
-
-Run the Rust unit tests:
-
-```bash
-PATH="$HOME/.cargo/bin:$PATH" cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
 Cargo keeps compiled dependencies and incremental build caches in `src-tauri/target/`.
@@ -116,3 +145,14 @@ src-tauri/              Tauri configuration and Rust backend
 ## Privacy
 
 Agent Deck runs locally. It does not upload conversations to an Agent Deck service or expose credentials collected by the provider adapters to the frontend.
+
+Report security issues through the private process in [`SECURITY.md`](./SECURITY.md).
+
+## License and trademarks
+
+Agent Deck source code is available under the [MIT License](./LICENSE).
+Third-party icons, names, and trademarks remain the property of their
+respective owners; see [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md).
+
+This repository is published as a showcase and does not currently accept
+unsolicited issues or pull requests. See [`CONTRIBUTING.md`](./CONTRIBUTING.md).
