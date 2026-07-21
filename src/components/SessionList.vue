@@ -15,6 +15,7 @@ const currentLocale = computed(() => locale.value as SupportedLocale)
 defineProps<{
   sessions: AgentSession[]
   selectedId: string
+  showSelection: boolean
 }>()
 
 const search = defineModel<string>('search', { required: true })
@@ -162,7 +163,7 @@ const emit = defineEmits<{
         :key="session.id"
         type="button"
         class="session-row"
-        :class="{ 'session-row--selected': selectedId === session.id }"
+        :class="{ 'session-row--selected': showSelection && selectedId === session.id }"
         data-session-row
         @click="emit('select', session.id)"
       >

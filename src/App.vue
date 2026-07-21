@@ -40,6 +40,7 @@ const isCompactDetail = useMediaQuery('(max-width: 1799px)')
 const isSessionDetailOpen = ref(false)
 const isAboutOpen = ref(false)
 const isSessionDetailModal = computed(() => isCompactDetail.value && isSessionDetailOpen.value)
+const isSessionSelectionVisible = computed(() => !isCompactDetail.value || isSessionDetailOpen.value)
 
 watch(isCompactDetail, () => {
   isSessionDetailOpen.value = false
@@ -119,6 +120,7 @@ function openAbout() {
           v-model:status-filter="statusFilter"
           :sessions
           :selected-id="selectedSessionId"
+          :show-selection="isSessionSelectionVisible"
           :inert="isSessionDetailModal"
           @select="handleSelectSession"
         />

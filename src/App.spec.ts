@@ -56,8 +56,9 @@ describe('Agent dashboard', () => {
     await wrapper.get('input[type="search"]').setValue('Corriger l’indexation')
 
     expect(wrapper.findAll('[data-session-row]')).toHaveLength(1)
-    expect(wrapper.get('[data-session-row]').classes()).toContain('session-row--selected')
+    expect(wrapper.get('[data-session-row]').classes()).not.toContain('session-row--selected')
     await wrapper.get('[data-session-row]').trigger('click')
+    expect(wrapper.get('[data-session-row]').classes()).toContain('session-row--selected')
     expect(wrapper.get('.conversation-header h1').text()).toBe('Corriger l’indexation des conversations')
 
     await wrapper.get('input[type="search"]').setValue('aucun résultat possible')
@@ -88,8 +89,9 @@ describe('Agent dashboard', () => {
     await wrapper.get('[aria-label="Rafraîchir"]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.get('[data-session-row]').classes()).toContain('session-row--selected')
+    expect(wrapper.get('[data-session-row]').classes()).not.toContain('session-row--selected')
     await wrapper.get('[data-session-row]').trigger('click')
+    expect(wrapper.get('[data-session-row]').classes()).toContain('session-row--selected')
     expect(wrapper.get('.conversation-header h1').text()).toBe('Construire le tableau de bord agents')
   })
 
@@ -220,6 +222,7 @@ describe('Agent dashboard', () => {
     const wrapper = mountApp()
     await flushPromises()
 
+    expect(wrapper.find('.session-row--selected').exists()).toBe(false)
     const trigger = wrapper
       .findAll('[data-session-row]')
       .find((row) => row.text().includes('Corriger l’indexation des conversations'))
@@ -228,6 +231,7 @@ describe('Agent dashboard', () => {
     await flushPromises()
 
     const closeButton = wrapper.get('.conversation-panel__close')
+    expect(trigger?.classes()).toContain('session-row--selected')
     expect(document.activeElement).toBe(closeButton.element)
     expect(wrapper.get('.session-column').attributes('inert')).toBeDefined()
     expect(wrapper.get('.usage-panel').attributes('inert')).toBeDefined()
@@ -238,7 +242,27 @@ describe('Agent dashboard', () => {
 
     await closeButton.trigger('click')
     await flushPromises()
+    expect(wrapper.find('.session-row--selected').exists()).toBe(false)
     expect(document.activeElement).toBe(trigger?.element)
+  })
+
+  it('keeps the selected session visible when the desktop detail is always displayed', async () => {
+    vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(() => true),
+    }))
+
+    const wrapper = mountApp()
+    await flushPromises()
+
+    expect(wrapper.find('.conversation-panel').exists()).toBe(true)
+    expect(wrapper.findAll('.session-row--selected')).toHaveLength(1)
   })
 
   it('keeps the dashboard read-only', async () => {
@@ -309,7 +333,7 @@ describe('Agent dashboard', () => {
     await wrapper.get('[data-status-filter="waiting"]').trigger('click')
     expect(wrapper.findAll('[data-session-row]')).toHaveLength(1)
     expect(wrapper.get('[data-session-row]').text()).toContain('Revoir le moteur de synchronisation')
-    expect(wrapper.get('[data-session-row]').classes()).toContain('session-row--selected')
+    expect(wrapper.get('[data-session-row]').classes()).not.toContain('session-row--selected')
     expect(trigger.text()).toContain('1')
     expect(trigger.attributes('aria-label')).toBe('1 statut sélectionné')
 
