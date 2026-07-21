@@ -38,7 +38,6 @@ const isDark = computed(() => mode.value === 'dark')
 const isCompactDetail = useMediaQuery('(max-width: 1799px)')
 const isSessionDetailOpen = ref(false)
 const isAboutOpen = ref(false)
-const isSessionDetailVisible = computed(() => !isCompactDetail.value || isSessionDetailOpen.value)
 const isSessionDetailModal = computed(() => isCompactDetail.value && isSessionDetailOpen.value)
 
 watch(isCompactDetail, () => {
@@ -121,21 +120,9 @@ function openAbout() {
           :inert="isSessionDetailModal"
           @select="handleSelectSession"
         />
-        <button
-          v-if="isCompactDetail && isSessionDetailOpen"
-          type="button"
-          class="conversation-backdrop"
-          :aria-label="t('detail.close')"
-          @click="isSessionDetailOpen = false"
-        />
         <SessionDetail
-          v-if="selectedSession"
+          v-if="selectedSession && !isCompactDetail"
           :session="selectedSession"
-          :compact="isCompactDetail"
-          :open="isSessionDetailOpen"
-          :class="{ 'conversation-panel--open': isSessionDetailOpen }"
-          :inert="!isSessionDetailVisible"
-          @close="isSessionDetailOpen = false"
         />
         <UsagePanel
           :quotas="snapshot.quotas"
@@ -154,6 +141,27 @@ function openAbout() {
     <span />
     {{ t('app.loading') }}
   </div>
+
+  <Teleport to="body">
+    <div
+      v-if="selectedSession && isCompactDetail && isSessionDetailOpen"
+      class="conversation-overlay"
+    >
+      <button
+        type="button"
+        class="conversation-backdrop"
+        :aria-label="t('detail.close')"
+        @click="isSessionDetailOpen = false"
+      />
+      <SessionDetail
+        :session="selectedSession"
+        compact
+        open
+        class="conversation-panel--open"
+        @close="isSessionDetailOpen = false"
+      />
+    </div>
+  </Teleport>
 
   <AboutPanel :open="isAboutOpen" @close="isAboutOpen = false" />
 </template>
