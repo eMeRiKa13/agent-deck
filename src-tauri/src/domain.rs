@@ -1,3 +1,5 @@
+//! Shared serialization model for the Rust providers and the Vue dashboard IPC boundary.
+
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -162,7 +164,7 @@ pub struct ProviderSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use super::UsageCost;
+    use super::*;
     use serde_json::json;
 
     #[test]
@@ -187,6 +189,112 @@ mod tests {
                 "kind": "includedOnDemand",
                 "included": 111.73,
                 "onDemand": 2.5
+            })
+        );
+    }
+
+    #[test]
+    fn serializes_the_complete_dashboard_contract() {
+        let snapshot = DashboardSnapshot {
+            providers: vec![ProviderDefinition {
+                id: ProviderId::Codex,
+                name: "Codex",
+                short_name: "CX",
+                accent: "#111111",
+                connected: true,
+                error: Some(UiText::message("errors.providerPartial")),
+            }],
+            sessions: vec![AgentSession {
+                id: "codex:thread-1".to_string(),
+                provider: ProviderId::Codex,
+                title: UiText::from("Dashboard contract"),
+                project: UiText::message("generated.localProject"),
+                branch: "main".to_string(),
+                model: "gpt-5".to_string(),
+                status: SessionStatus::Working,
+                started_at_ms: 1_000,
+                updated_at_ms: 2_000,
+                token_count: 42,
+                summary: UiText::from("Contract fixture"),
+                events: vec![SessionEvent {
+                    id: "event-1".to_string(),
+                    kind: EventKind::Assistant,
+                    title: UiText::from("Codex"),
+                    body: UiText::from("Ready"),
+                    timestamp_ms: 2_000,
+                }],
+            }],
+            quotas: vec![ProviderQuota {
+                provider: ProviderId::Codex,
+                plan: "Plus".to_string(),
+                account: UiText::from("codex@example.com"),
+                windows: vec![QuotaWindow {
+                    id: "codex-global".to_string(),
+                    label: UiText::message("quota.global"),
+                    used_percent: 43,
+                    reset_at_ms: Some(3_000),
+                    reset_text: None,
+                }],
+                cost: Some(UsageCost::IncludedOnDemand {
+                    included: 12.5,
+                    on_demand: 1.25,
+                }),
+            }],
+            refreshed_at_ms: 2_500,
+        };
+
+        let serialized =
+            serde_json::to_value(snapshot).expect("dashboard snapshot should serialize");
+
+        assert_eq!(
+            serialized,
+            json!({
+                "providers": [{
+                    "id": "codex",
+                    "name": "Codex",
+                    "shortName": "CX",
+                    "accent": "#111111",
+                    "connected": true,
+                    "error": {"key": "errors.providerPartial"}
+                }],
+                "sessions": [{
+                    "id": "codex:thread-1",
+                    "provider": "codex",
+                    "title": "Dashboard contract",
+                    "project": {"key": "generated.localProject"},
+                    "branch": "main",
+                    "model": "gpt-5",
+                    "status": "working",
+                    "startedAtMs": 1_000,
+                    "updatedAtMs": 2_000,
+                    "tokenCount": 42,
+                    "summary": "Contract fixture",
+                    "events": [{
+                        "id": "event-1",
+                        "kind": "assistant",
+                        "title": "Codex",
+                        "body": "Ready",
+                        "timestampMs": 2_000
+                    }]
+                }],
+                "quotas": [{
+                    "provider": "codex",
+                    "plan": "Plus",
+                    "account": "codex@example.com",
+                    "windows": [{
+                        "id": "codex-global",
+                        "label": {"key": "quota.global"},
+                        "usedPercent": 43,
+                        "resetAtMs": 3_000,
+                        "resetText": null
+                    }],
+                    "cost": {
+                        "kind": "includedOnDemand",
+                        "included": 12.5,
+                        "onDemand": 1.25
+                    }
+                }],
+                "refreshedAtMs": 2_500
             })
         );
     }

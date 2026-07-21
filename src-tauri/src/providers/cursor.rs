@@ -16,6 +16,7 @@ use crate::{
     },
 };
 
+// Load local history off the async runtime and treat remote quota access as optional data.
 pub async fn load(include_quotas: bool) -> Result<ProviderSnapshot, String> {
     let (sessions, session_warning) = match tokio::task::spawn_blocking(load_sessions).await {
         Ok(Ok((sessions, warning))) => (Ok(sessions), warning),
@@ -291,6 +292,7 @@ fn load_bubbles(
     Ok((events, token_count, last_type))
 }
 
+// Fetch usage and account metadata concurrently from Cursor's private authenticated endpoints.
 async fn load_quota() -> Result<ProviderQuota, String> {
     let token = tokio::task::spawn_blocking(load_access_token)
         .await
@@ -342,6 +344,7 @@ async fn load_quota() -> Result<ProviderQuota, String> {
     parse_quota(&summary, &account)
 }
 
+// Read Cursor's session token from its local state database without sending it to Vue.
 fn load_access_token() -> Result<String, String> {
     let path = db_path()?;
     let connection = open_db(&path)?;
@@ -365,6 +368,7 @@ fn load_access_token() -> Result<String, String> {
     }
 }
 
+// Decode only the JWT payload needed to derive Cursor's authenticated user identifier.
 fn jwt_payload(token: &str) -> Result<Value, String> {
     let encoded = token.split('.').nth(1).ok_or("Jeton Cursor invalide")?;
     let decoded = URL_SAFE_NO_PAD

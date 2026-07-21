@@ -41,7 +41,11 @@ impl DesktopSessionMetadata {
     }
 }
 
-type SessionCandidate = (i64, PathBuf, Option<DesktopSessionMetadata>);
+struct SessionCandidate {
+    updated_at_ms: i64,
+    path: PathBuf,
+    metadata: Option<DesktopSessionMetadata>,
+}
 
 #[derive(Clone)]
 struct ParsedSession {
@@ -60,6 +64,7 @@ struct CachedSession {
 
 static SESSION_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedSession>>> = OnceLock::new();
 
+// Load local history off the async runtime and treat remote quota access as optional data.
 pub async fn load(include_quotas: bool) -> Result<ProviderSnapshot, String> {
     let sessions = match tokio::task::spawn_blocking(load_sessions).await {
         Ok(result) => result,
@@ -140,11 +145,15 @@ fn load_sessions() -> Result<Vec<AgentSession>, String> {
                 .map(DesktopSessionMetadata::updated_at)
                 .filter(|updated| *updated > 0)
                 .unwrap_or(modified);
-            candidates.push((updated, path.to_path_buf(), metadata));
+            candidates.push(SessionCandidate {
+                updated_at_ms: updated,
+                path: path.to_path_buf(),
+                metadata,
+            });
         }
     }
-    candidates.sort_by_key(|(updated, _, _)| std::cmp::Reverse(*updated));
-    candidates.dedup_by(|left, right| left.1 == right.1);
+    candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.updated_at_ms));
+    candidates.dedup_by(|left, right| left.path == right.path);
 
     let sessions = parse_candidate_sessions(candidates, 10);
     if sessions.is_empty() {
@@ -158,8 +167,13 @@ fn load_sessions() -> Result<Vec<AgentSession>, String> {
 fn parse_candidate_sessions(candidates: Vec<SessionCandidate>, limit: usize) -> Vec<AgentSession> {
     candidates
         .into_iter()
-        .filter_map(|(updated, path, metadata)| {
-            cached_session(&path, updated, metadata.as_ref()).ok()
+        .filter_map(|candidate| {
+            cached_session(
+                &candidate.path,
+                candidate.updated_at_ms,
+                candidate.metadata.as_ref(),
+            )
+            .ok()
         })
         .take(limit)
         .collect()
@@ -232,6 +246,7 @@ fn refresh_session_status(mut parsed: ParsedSession, modified_ms: i64) -> AgentS
     parsed.session
 }
 
+// Index Claude Desktop metadata by CLI session ID so JSONL transcripts receive current labels.
 fn load_desktop_session_metadata(root: &Path) -> HashMap<String, DesktopSessionMetadata> {
     if !root.exists() {
         return HashMap::new();
@@ -478,6 +493,7 @@ fn parse_iso_ms(value: &str) -> Option<i64> {
         .map(|value| value.timestamp_millis())
 }
 
+// Flatten Claude's string-or-block message representation into searchable display text.
 fn message_text(content: &Value) -> String {
     if let Some(value) = content.as_str() {
         return value.to_string();
@@ -492,6 +508,7 @@ fn message_text(content: &Value) -> String {
         .join("\n")
 }
 
+// Extract the first tool name when an assistant message contains no textual response.
 fn tool_name(content: &Value) -> Option<String> {
     content
         .as_array()?
@@ -506,6 +523,7 @@ struct Credentials {
     plan: String,
 }
 
+// Prefer authenticated OAuth usage and fall back to Claude Desktop's local measurement history.
 async fn load_quota() -> Result<ProviderQuota, String> {
     match load_credentials().await {
         Ok(credentials) => match load_oauth_quota(credentials).await {
@@ -520,6 +538,7 @@ async fn load_quota() -> Result<ProviderQuota, String> {
     }
 }
 
+// Fetch the private OAuth usage payload with a bounded request timeout.
 async fn load_oauth_quota(credentials: Credentials) -> Result<ProviderQuota, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
@@ -541,6 +560,7 @@ async fn load_oauth_quota(credentials: Credentials) -> Result<ProviderQuota, Str
     parse_quota(&value, credentials.plan)
 }
 
+// Translate the newest Claude Desktop usage sample into the shared quota model.
 fn load_desktop_quota() -> Result<ProviderQuota, String> {
     let path = home_dir()?.join("Library/Application Support/Claude/plan-usage-history.json");
     let value: Value = serde_json::from_slice(
@@ -586,6 +606,7 @@ fn load_desktop_quota() -> Result<ProviderQuota, String> {
     })
 }
 
+// Read OAuth credentials from Claude's local configuration without exposing the token to Vue.
 async fn load_credentials() -> Result<Credentials, String> {
     let file = home_dir()?.join(".claude/.credentials.json");
     let data = if file.exists() {
@@ -771,7 +792,11 @@ mod tests {
             crate::utils::now_ms()
         ));
         std::fs::create_dir_all(&root).expect("temporary candidate directory");
-        let mut candidates = vec![(1, root.join("missing.jsonl"), None)];
+        let mut candidates = vec![SessionCandidate {
+            updated_at_ms: 1,
+            path: root.join("missing.jsonl"),
+            metadata: None,
+        }];
         for index in 0..11 {
             let path = root.join(format!("session-{index}.jsonl"));
             std::fs::write(
@@ -781,7 +806,11 @@ mod tests {
                 ),
             )
             .expect("Claude transcript fixture");
-            candidates.push((1_000 + index, path, None));
+            candidates.push(SessionCandidate {
+                updated_at_ms: 1_000 + index,
+                path,
+                metadata: None,
+            });
         }
 
         let sessions = parse_candidate_sessions(candidates, 10);

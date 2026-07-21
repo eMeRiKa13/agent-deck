@@ -1,3 +1,4 @@
+// Shared dashboard contract mirrored by the Rust serialization model in src-tauri/src/domain.rs.
 export type ProviderId = 'codex' | 'claude' | 'cursor'
 export type SessionStatus = 'working' | 'waiting' | 'completed' | 'attention'
 

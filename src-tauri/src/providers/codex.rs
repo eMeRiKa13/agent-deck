@@ -24,6 +24,7 @@ use crate::{
     },
 };
 
+// Load local history off the async runtime and treat app-server quota access as optional data.
 pub async fn load(include_quotas: bool) -> Result<ProviderSnapshot, String> {
     let sessions = match tokio::task::spawn_blocking(load_sessions).await {
         Ok(result) => result,
@@ -147,6 +148,7 @@ fn codex_db_rank(path: &Path) -> (bool, i64, u128) {
     )
 }
 
+// Convert one database thread and its recent rollout events into the shared session model.
 fn thread_to_session(row: ThreadRow) -> Result<AgentSession, String> {
     let path = PathBuf::from(&row.rollout_path);
     let events = if path.exists() {
@@ -371,6 +373,7 @@ fn complete_quota_exchange(
     Ok((account, rate_limits))
 }
 
+// Locate the bundled desktop binary first while keeping CODEX_PATH available for development.
 fn find_codex_binary() -> PathBuf {
     std::env::var_os("CODEX_PATH")
         .map(PathBuf::from)
@@ -446,6 +449,7 @@ fn parse_quota(account: &Value, response: &Value) -> Result<ProviderQuota, Strin
     })
 }
 
+// Preserve stable window IDs while supporting both current and legacy rate-limit payloads.
 fn codex_window_identity(
     key: &str,
     duration_minutes: Option<i64>,

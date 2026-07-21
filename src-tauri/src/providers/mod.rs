@@ -12,6 +12,36 @@ use crate::{
     utils::now_ms,
 };
 
+// Keep static provider presentation metadata together when merging adapter results.
+#[derive(Clone, Copy)]
+struct ProviderIdentity {
+    id: ProviderId,
+    name: &'static str,
+    short_name: &'static str,
+    accent: &'static str,
+}
+
+const CODEX: ProviderIdentity = ProviderIdentity {
+    id: ProviderId::Codex,
+    name: "Codex",
+    short_name: "CX",
+    accent: "#111111",
+};
+
+const CLAUDE: ProviderIdentity = ProviderIdentity {
+    id: ProviderId::Claude,
+    name: "Claude",
+    short_name: "CL",
+    accent: "#d97757",
+};
+
+const CURSOR: ProviderIdentity = ProviderIdentity {
+    id: ProviderId::Cursor,
+    name: "Cursor",
+    short_name: "CU",
+    accent: "#6d5dfc",
+};
+
 pub async fn dashboard_snapshot(include_quotas: bool) -> DashboardSnapshot {
     let (codex, claude, cursor) = tokio::join!(
         codex::load(include_quotas),
@@ -23,36 +53,9 @@ pub async fn dashboard_snapshot(include_quotas: bool) -> DashboardSnapshot {
     let mut sessions = Vec::new();
     let mut quotas = Vec::new();
 
-    merge_provider(
-        &mut providers,
-        &mut sessions,
-        &mut quotas,
-        ProviderId::Codex,
-        "Codex",
-        "CX",
-        "#111111",
-        codex,
-    );
-    merge_provider(
-        &mut providers,
-        &mut sessions,
-        &mut quotas,
-        ProviderId::Claude,
-        "Claude",
-        "CL",
-        "#d97757",
-        claude,
-    );
-    merge_provider(
-        &mut providers,
-        &mut sessions,
-        &mut quotas,
-        ProviderId::Cursor,
-        "Cursor",
-        "CU",
-        "#6d5dfc",
-        cursor,
-    );
+    merge_provider(&mut providers, &mut sessions, &mut quotas, CODEX, codex);
+    merge_provider(&mut providers, &mut sessions, &mut quotas, CLAUDE, claude);
+    merge_provider(&mut providers, &mut sessions, &mut quotas, CURSOR, cursor);
 
     sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at_ms));
 
@@ -104,12 +107,15 @@ fn merge_provider(
     providers: &mut Vec<ProviderDefinition>,
     sessions: &mut Vec<crate::domain::AgentSession>,
     quotas: &mut Vec<crate::domain::ProviderQuota>,
-    id: ProviderId,
-    name: &'static str,
-    short_name: &'static str,
-    accent: &'static str,
+    identity: ProviderIdentity,
     result: Result<ProviderSnapshot, String>,
 ) {
+    let ProviderIdentity {
+        id,
+        name,
+        short_name,
+        accent,
+    } = identity;
     match result {
         Ok(mut snapshot) => {
             let error = snapshot.warning.map(|warning| {
