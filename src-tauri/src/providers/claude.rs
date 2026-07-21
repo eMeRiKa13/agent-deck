@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, VecDeque},
     fs::File,
     io::{BufRead, BufReader},
-    path::Path,
+    path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
 
@@ -39,6 +39,8 @@ impl DesktopSessionMetadata {
     }
 }
 
+type SessionCandidate = (i64, PathBuf, Option<DesktopSessionMetadata>);
+
 pub async fn load() -> Result<ProviderSnapshot, String> {
     let sessions = tokio::task::spawn_blocking(load_sessions)
         .await
@@ -54,6 +56,7 @@ pub async fn load() -> Result<ProviderSnapshot, String> {
     })
 }
 
+// Discover desktop and local-agent transcripts, then keep ten valid sessions.
 fn load_sessions() -> Result<Vec<AgentSession>, String> {
     let home = home_dir()?;
     let desktop_sessions_root =
@@ -126,18 +129,23 @@ fn load_sessions() -> Result<Vec<AgentSession>, String> {
     candidates.sort_by_key(|(updated, _, _)| std::cmp::Reverse(*updated));
     candidates.dedup_by(|left, right| left.1 == right.1);
 
-    let sessions = candidates
-        .into_iter()
-        .take(10)
-        .filter_map(|(updated, path, metadata)| {
-            parse_session(&path, updated, metadata.as_ref()).ok()
-        })
-        .collect::<Vec<_>>();
+    let sessions = parse_candidate_sessions(candidates, 10);
     if sessions.is_empty() {
         Err("Aucune conversation locale Claude trouvée".to_string())
     } else {
         Ok(sessions)
     }
+}
+
+// Skip unreadable candidates without reducing the requested result count.
+fn parse_candidate_sessions(candidates: Vec<SessionCandidate>, limit: usize) -> Vec<AgentSession> {
+    candidates
+        .into_iter()
+        .filter_map(|(updated, path, metadata)| {
+            parse_session(&path, updated, metadata.as_ref()).ok()
+        })
+        .take(limit)
+        .collect()
 }
 
 fn load_desktop_session_metadata(root: &Path) -> HashMap<String, DesktopSessionMetadata> {
@@ -180,6 +188,7 @@ fn load_desktop_session_metadata(root: &Path) -> HashMap<String, DesktopSessionM
         .collect()
 }
 
+// Convert a Claude JSONL transcript into the compact dashboard representation.
 fn parse_session(
     path: &Path,
     modified_ms: i64,
@@ -445,7 +454,7 @@ async fn load_oauth_quota(credentials: Credentials) -> Result<ProviderQuota, Str
         return Err(format!("Quotas Claude : HTTP {}", response.status()));
     }
     let value: Value = response.json().await.map_err(|error| error.to_string())?;
-    Ok(parse_quota(&value, credentials.plan))
+    parse_quota(&value, credentials.plan)
 }
 
 fn load_desktop_quota() -> Result<ProviderQuota, String> {
@@ -534,7 +543,11 @@ async fn load_credentials() -> Result<Credentials, String> {
     Ok(Credentials { access_token, plan })
 }
 
-fn parse_quota(value: &Value, plan: String) -> ProviderQuota {
+// Validate OAuth quota windows before exposing percentages to the dashboard.
+fn parse_quota(value: &Value, plan: String) -> Result<ProviderQuota, String> {
+    if !value.is_object() {
+        return Err("Réponse de quota Claude invalide".to_string());
+    }
     let mut windows = Vec::new();
     for (id, label, key) in [
         ("claude-session", "quota.fiveHours", "five_hour"),
@@ -544,11 +557,22 @@ fn parse_quota(value: &Value, plan: String) -> ProviderQuota {
     ] {
         let window = &value[key];
         if window.is_object() {
+            let utilization = window["utilization"]
+                .as_f64()
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| format!("Quota Claude {key} sans utilisation valide"))?;
+            let reset_at_ms = match window.get("resets_at") {
+                Some(Value::String(value)) => reset_at_ms_from_iso(Some(value))
+                    .ok_or_else(|| format!("Date de réinitialisation Claude {key} invalide"))
+                    .map(Some)?,
+                Some(Value::Null) | None => None,
+                Some(_) => return Err(format!("Date de réinitialisation Claude {key} invalide")),
+            };
             windows.push(QuotaWindow {
                 id: id.to_string(),
                 label: UiText::message(label),
-                used_percent: clamp_percent(window["utilization"].as_f64().unwrap_or_default()),
-                reset_at_ms: reset_at_ms_from_iso(window["resets_at"].as_str()),
+                used_percent: clamp_percent(utilization),
+                reset_at_ms,
                 reset_text: Some(UiText::message("quota.resetUnknown")),
             });
         }
@@ -560,6 +584,17 @@ fn parse_quota(value: &Value, plan: String) -> ProviderQuota {
             .take(3)
             .enumerate()
         {
+            let percent = limit["percent"]
+                .as_f64()
+                .filter(|value| value.is_finite())
+                .ok_or("Quota Claude limité sans pourcentage valide")?;
+            let reset_at_ms = match limit.get("resets_at") {
+                Some(Value::String(value)) => reset_at_ms_from_iso(Some(value))
+                    .ok_or("Date de quota Claude limité invalide")
+                    .map(Some)?,
+                Some(Value::Null) | None => None,
+                Some(_) => return Err("Date de quota Claude limité invalide".to_string()),
+            };
             let name = limit["scope"]["model"]["display_name"]
                 .as_str()
                 .unwrap_or("Model");
@@ -568,24 +603,34 @@ fn parse_quota(value: &Value, plan: String) -> ProviderQuota {
             windows.push(QuotaWindow {
                 id: format!("claude-scoped-{index}"),
                 label: UiText::message_with("quota.modelWeekly", params),
-                used_percent: clamp_percent(limit["percent"].as_f64().unwrap_or_default()),
-                reset_at_ms: reset_at_ms_from_iso(limit["resets_at"].as_str()),
+                used_percent: clamp_percent(percent),
+                reset_at_ms,
                 reset_text: Some(UiText::message("quota.resetUnknown")),
             });
         }
     }
+    if windows.is_empty() {
+        return Err("Réponse de quota Claude sans fenêtre d’utilisation".to_string());
+    }
     let extra = &value["extra_usage"];
-    let cost = extra["used_credits"].as_f64().map(|value| UsageCost::ExtraUsage {
-        value,
-        currency: extra["currency"].as_str().unwrap_or("USD").to_string(),
-    });
-    ProviderQuota {
+    let cost = match extra.get("used_credits") {
+        Some(Value::Number(value)) => Some(UsageCost::ExtraUsage {
+            value: value
+                .as_f64()
+                .filter(|value| value.is_finite())
+                .ok_or("Crédits Claude invalides")?,
+            currency: extra["currency"].as_str().unwrap_or("USD").to_string(),
+        }),
+        Some(Value::Null) | None => None,
+        Some(_) => return Err("Crédits Claude invalides".to_string()),
+    };
+    Ok(ProviderQuota {
         provider: ProviderId::Claude,
         plan,
         account: UiText::message("generated.claudeAccount"),
         windows,
         cost,
-    }
+    })
 }
 
 fn format_plan(value: &str) -> String {
@@ -618,9 +663,50 @@ mod tests {
                 "seven_day": {"utilization": 31.0, "resets_at": "2030-01-07T10:00:00Z"}
             }),
             "Max 20×".to_string(),
-        );
+        )
+        .expect("valid Claude quota");
         assert_eq!(quota.windows.len(), 2);
         assert_eq!(quota.windows[0].used_percent, 72);
+    }
+
+    #[test]
+    fn rejects_incomplete_oauth_quota() {
+        assert!(parse_quota(&json!({}), "Pro".to_string()).is_err());
+        assert!(parse_quota(
+            &json!({"five_hour": {"resets_at": "2030-01-01T10:00:00Z"}}),
+            "Pro".to_string(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn skips_invalid_candidates_until_limit_is_reached() {
+        let root = std::env::temp_dir().join(format!(
+            "agent-deck-claude-candidates-{}-{}",
+            std::process::id(),
+            crate::utils::now_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("temporary candidate directory");
+        let mut candidates = vec![(1, root.join("missing.jsonl"), None)];
+        for index in 0..11 {
+            let path = root.join(format!("session-{index}.jsonl"));
+            std::fs::write(
+                &path,
+                format!(
+                    "{{\"type\":\"user\",\"sessionId\":\"session-{index}\",\"timestamp\":\"2030-01-01T10:00:00Z\",\"message\":{{\"content\":\"hello {index}\"}}}}\n"
+                ),
+            )
+            .expect("Claude transcript fixture");
+            candidates.push((1_000 + index, path, None));
+        }
+
+        let sessions = parse_candidate_sessions(candidates, 10);
+        std::fs::remove_dir_all(root).expect("remove candidate directory");
+
+        assert_eq!(sessions.len(), 10);
+        assert!(sessions
+            .iter()
+            .all(|session| session.id != "claude:session-10"));
     }
 
     #[test]

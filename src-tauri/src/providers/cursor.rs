@@ -54,6 +54,7 @@ struct HeaderRow {
     value: String,
 }
 
+// Read recent Composer headers and attach their complete local usage history.
 fn load_sessions() -> Result<Vec<AgentSession>, String> {
     let path = db_path()?;
     if !path.exists() {
@@ -81,14 +82,14 @@ fn load_sessions() -> Result<Vec<AgentSession>, String> {
             })
         })
         .map_err(|error| error.to_string())?
-        .filter_map(Result::ok)
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("En-tête Cursor illisible : {error}"))?;
     drop(statement);
 
     let sessions = headers
         .into_iter()
         .map(|header| header_to_session(&connection, header))
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()?;
     if sessions.is_empty() {
         Err("Aucune conversation Cursor trouvée".to_string())
     } else {
@@ -96,9 +97,10 @@ fn load_sessions() -> Result<Vec<AgentSession>, String> {
     }
 }
 
-fn header_to_session(connection: &Connection, row: HeaderRow) -> AgentSession {
-    let header: Value = serde_json::from_str(&row.value).unwrap_or_default();
-    let (events, token_count, last_type) = load_bubbles(connection, &row.composer_id);
+fn header_to_session(connection: &Connection, row: HeaderRow) -> Result<AgentSession, String> {
+    let header: Value = serde_json::from_str(&row.value)
+        .map_err(|error| format!("En-tête Cursor {} invalide : {error}", row.composer_id))?;
+    let (events, token_count, last_type) = load_bubbles(connection, &row.composer_id)?;
     let name = header["name"]
         .as_str()
         .or_else(|| header["subtitle"].as_str())
@@ -136,7 +138,7 @@ fn header_to_session(connection: &Connection, row: HeaderRow) -> AgentSession {
         SessionStatus::Completed
     };
 
-    AgentSession {
+    Ok(AgentSession {
         id: format!("cursor:{}", row.composer_id),
         provider: ProviderId::Cursor,
         title: if name == "Conversation Cursor" {
@@ -161,39 +163,48 @@ fn header_to_session(connection: &Connection, row: HeaderRow) -> AgentSession {
             UiText::from(truncate(summary, 180))
         },
         events,
-    }
+    })
 }
 
+// Count every bubble while exposing only the six most recent display events.
 fn load_bubbles(
     connection: &Connection,
     composer_id: &str,
-) -> (Vec<SessionEvent>, u64, Option<i64>) {
-    let mut statement = match connection.prepare(
-        "SELECT value FROM cursorDiskKV
-         WHERE rowid > (SELECT COALESCE(MAX(rowid), 0) - 10000 FROM cursorDiskKV)
-           AND key LIKE ?1
-         ORDER BY rowid DESC LIMIT 40",
-    ) {
-        Ok(statement) => statement,
-        Err(_) => return (Vec::new(), 0, None),
-    };
-    let pattern = format!("bubbleId:{composer_id}:%");
-    let values = match statement.query_map([pattern], |row| {
-        let value = row.get_ref(0)?;
-        let bytes = match value {
-            ValueRef::Text(value) | ValueRef::Blob(value) => value,
-            _ => return Ok(None),
-        };
-        Ok(String::from_utf8(bytes.to_vec()).ok())
-    }) {
-        Ok(values) => values.filter_map(Result::ok).flatten().collect::<Vec<_>>(),
-        Err(_) => return (Vec::new(), 0, None),
-    };
+) -> Result<(Vec<SessionEvent>, u64, Option<i64>), String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT value FROM cursorDiskKV
+         WHERE key >= ?1 AND key < ?2
+         ORDER BY rowid ASC",
+        )
+        .map_err(|error| format!("Bulles Cursor indisponibles : {error}"))?;
+    let key_prefix = format!("bubbleId:{composer_id}:");
+    let key_upper_bound = format!("bubbleId:{composer_id};");
+    let values = statement
+        .query_map([key_prefix, key_upper_bound], |row| {
+            let value = row.get_ref(0)?;
+            match value {
+                ValueRef::Text(value) | ValueRef::Blob(value) => Ok(value.to_vec()),
+                _ => Err(rusqlite::Error::InvalidColumnType(
+                    0,
+                    "value".to_string(),
+                    value.data_type(),
+                )),
+            }
+        })
+        .map_err(|error| format!("Requête de bulles Cursor impossible : {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Bulle Cursor illisible : {error}"))?;
 
     let mut parsed = values
         .into_iter()
-        .filter_map(|value| serde_json::from_str::<Value>(&value).ok())
-        .collect::<Vec<_>>();
+        .map(|value| {
+            let text = String::from_utf8(value)
+                .map_err(|error| format!("Bulle Cursor non UTF-8 : {error}"))?;
+            serde_json::from_str::<Value>(&text)
+                .map_err(|error| format!("Bulle Cursor JSON invalide : {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     parsed.sort_by_key(|value| value["createdAt"].as_i64().unwrap_or_default());
     let token_count = parsed
         .iter()
@@ -235,7 +246,7 @@ fn load_bubbles(
     if events.len() > 6 {
         events.drain(..events.len() - 6);
     }
-    (events, token_count, last_type)
+    Ok((events, token_count, last_type))
 }
 
 async fn load_quota() -> Result<ProviderQuota, String> {
@@ -286,7 +297,7 @@ async fn load_quota() -> Result<ProviderQuota, String> {
         }
         _ => Value::Null,
     };
-    Ok(parse_quota(&summary, &account))
+    parse_quota(&summary, &account)
 }
 
 fn load_access_token() -> Result<String, String> {
@@ -320,7 +331,11 @@ fn jwt_payload(token: &str) -> Result<Value, String> {
     serde_json::from_slice(&decoded).map_err(|_| "Payload Cursor invalide".to_string())
 }
 
-fn parse_quota(summary: &Value, account: &Value) -> ProviderQuota {
+// Validate the private API shape before converting it into UI quota values.
+fn parse_quota(summary: &Value, account: &Value) -> Result<ProviderQuota, String> {
+    if !summary.is_object() {
+        return Err("Réponse de quota Cursor invalide".to_string());
+    }
     let plan = &summary["individualUsage"]["plan"];
     let overall = &summary["individualUsage"]["overall"];
     let pooled = &summary["teamUsage"]["pooled"];
@@ -329,6 +344,9 @@ fn parse_quota(summary: &Value, account: &Value) -> ProviderQuota {
         let limit = value["limit"].as_f64().unwrap_or_default();
         (limit > 0.0).then_some((used / limit) * 100.0)
     };
+    if !plan.is_object() && !overall.is_object() && !pooled.is_object() {
+        return Err("Réponse de quota Cursor sans données d’utilisation".to_string());
+    }
     let plan_percent = plan["totalPercentUsed"]
         .as_f64()
         .or_else(|| {
@@ -343,13 +361,22 @@ fn parse_quota(summary: &Value, account: &Value) -> ProviderQuota {
         .or_else(|| ratio(plan))
         .or_else(|| ratio(overall))
         .or_else(|| ratio(pooled))
-        .unwrap_or_default();
+        .filter(|value| value.is_finite())
+        .ok_or("Réponse de quota Cursor sans pourcentage exploitable")?;
+
+    let reset_at_ms = match summary.get("billingCycleEnd") {
+        Some(Value::String(value)) => reset_at_ms_from_iso(Some(value))
+            .ok_or("Date de cycle Cursor invalide")
+            .map(Some)?,
+        Some(Value::Null) | None => None,
+        Some(_) => return Err("Date de cycle Cursor invalide".to_string()),
+    };
 
     let mut windows = vec![QuotaWindow {
         id: "cursor-plan".to_string(),
         label: UiText::message("quota.included"),
         used_percent: clamp_percent(plan_percent),
-        reset_at_ms: reset_at_ms_from_iso(summary["billingCycleEnd"].as_str()),
+        reset_at_ms,
         reset_text: Some(UiText::message("quota.resetUnknown")),
     }];
     if plan["autoPercentUsed"].is_number() {
@@ -373,12 +400,15 @@ fn parse_quota(summary: &Value, account: &Value) -> ProviderQuota {
     let used_cents = plan["used"]
         .as_f64()
         .or_else(|| overall["used"].as_f64())
-        .or_else(|| pooled["used"].as_f64())
-        .unwrap_or_default();
-    let on_demand_cents = summary["individualUsage"]["onDemand"]["used"]
-        .as_f64()
-        .unwrap_or_default();
-    ProviderQuota {
+        .or_else(|| pooled["used"].as_f64());
+    let on_demand_cents = summary["individualUsage"]["onDemand"]["used"].as_f64();
+    let cost = used_cents
+        .or(on_demand_cents)
+        .map(|_| UsageCost::IncludedOnDemand {
+            included: used_cents.unwrap_or_default() / 100.0,
+            on_demand: on_demand_cents.unwrap_or_default() / 100.0,
+        });
+    Ok(ProviderQuota {
         provider: ProviderId::Cursor,
         plan: summary["membershipType"]
             .as_str()
@@ -389,11 +419,8 @@ fn parse_quota(summary: &Value, account: &Value) -> ProviderQuota {
             .map(UiText::from)
             .unwrap_or_else(|| UiText::message("generated.cursorAccount")),
         windows,
-        cost: Some(UsageCost::IncludedOnDemand {
-            included: used_cents / 100.0,
-            on_demand: on_demand_cents / 100.0,
-        }),
-    }
+        cost,
+    })
 }
 
 fn format_membership(value: &str) -> String {
@@ -418,9 +445,67 @@ mod tests {
                 "individualUsage": {"plan": {"used": 1250, "limit": 2000, "totalPercentUsed": 62.5}}
             }),
             &json!({"email": "cursor@example.com"}),
-        );
+        )
+        .expect("valid Cursor quota");
         assert_eq!(quota.windows[0].used_percent, 63);
         assert_eq!(quota.plan, "Pro");
+    }
+
+    #[test]
+    fn rejects_empty_usage_summary() {
+        assert!(parse_quota(&json!({}), &Value::Null).is_err());
+    }
+
+    #[test]
+    fn counts_all_bubbles_but_keeps_six_events() {
+        let connection = Connection::open_in_memory().expect("in-memory database");
+        connection
+            .execute(
+                "CREATE TABLE cursorDiskKV (key TEXT UNIQUE, value BLOB)",
+                [],
+            )
+            .expect("Cursor bubble table");
+        for index in 0..8 {
+            let value = json!({
+                "bubbleId": format!("bubble-{index}"),
+                "type": if index % 2 == 0 { 1 } else { 2 },
+                "text": format!("message-{index}"),
+                "createdAt": 1_000 + index,
+                "tokenCount": {"inputTokens": 10, "outputTokens": 2}
+            });
+            connection
+                .execute(
+                    "INSERT INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
+                    rusqlite::params![format!("bubbleId:composer:{index}"), value.to_string()],
+                )
+                .expect("bubble row");
+        }
+
+        let (events, token_count, last_type) =
+            load_bubbles(&connection, "composer").expect("bubble history");
+        assert_eq!(token_count, 8 * 12);
+        assert_eq!(events.len(), 6);
+        assert_eq!(events[0].body.as_raw(), Some("message-2"));
+        assert_eq!(last_type, Some(2));
+    }
+
+    #[test]
+    fn reports_invalid_bubble_json() {
+        let connection = Connection::open_in_memory().expect("in-memory database");
+        connection
+            .execute(
+                "CREATE TABLE cursorDiskKV (key TEXT UNIQUE, value BLOB)",
+                [],
+            )
+            .expect("Cursor bubble table");
+        connection
+            .execute(
+                "INSERT INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
+                rusqlite::params!["bubbleId:composer:broken", "not-json"],
+            )
+            .expect("invalid bubble row");
+
+        assert!(load_bubbles(&connection, "composer").is_err());
     }
 
     #[test]
