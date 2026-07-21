@@ -84,6 +84,19 @@ Run the Rust unit tests:
 PATH="$HOME/.cargo/bin:$PATH" cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
+Cargo keeps compiled dependencies and incremental build caches in `src-tauri/target/`.
+The directory is ignored by Git and can be safely regenerated. If it grows
+too large, reclaim the space with:
+
+```bash
+pnpm clean:rust
+```
+
+Development and test profiles keep line tables for useful Rust backtraces but
+omit debug symbols from third-party dependencies to limit future growth. Use
+`CARGO_PROFILE_DEV_DEBUG=2` temporarily when a native debugging session needs
+full symbols.
+
 Smoke tests that inspect installed application data are ignored by default. Run them explicitly with:
 
 ```bash

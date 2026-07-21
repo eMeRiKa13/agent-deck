@@ -19,3 +19,18 @@ tauri-plugin-opener = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["io-util", "macros", "process", "time"] }
 walkdir = "2"
+
+# Keep local builds debuggable without retaining full symbols for the large
+# third-party Tauri dependency graph. Full symbols remain available by
+# overriding the profile when a native debugging session needs them.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.test]
+debug = "line-tables-only"
+
+[profile.test.package."*"]
+debug = false

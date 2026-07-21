@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "dev:desktop": "PATH=\"$HOME/.cargo/bin:$PATH\" tauri dev",
+    "clean:rust": "PATH=\"$HOME/.cargo/bin:$PATH\" cargo clean --manifest-path src-tauri/Cargo.toml",
     "build": "vue-tsc --noEmit && vite build",
     "build:desktop": "PATH=\"$HOME/.cargo/bin:$PATH\" tauri build",
     "preview": "vite preview --host 127.0.0.1 --port 1421",
