@@ -2393,6 +2393,18 @@ body {
   object-fit: contain;
 }
 
+.about-panel__link-icon--github-dark {
+  display: none;
+}
+
+.dark .about-panel__link-icon--github-light {
+  display: none;
+}
+
+.dark .about-panel__link-icon--github-dark {
+  display: block;
+}
+
 .about-panel__links button svg:last-child {
   color: var(--faint-foreground);
 }

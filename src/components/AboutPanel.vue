@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import {
   ArrowUpRightIcon,
-  GitForkIcon,
   MonitorIcon,
   ShieldCheckIcon,
   XIcon,
@@ -10,6 +9,8 @@ import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import agentDeckMark from '@/assets/branding/agent-deck-mark.png'
 import enchanterFavicon from '@/assets/branding/enchanter-favicon.ico'
+import githubInvertocatBlack from '@/assets/branding/github-invertocat-black.svg'
+import githubInvertocatWhite from '@/assets/branding/github-invertocat-white.svg'
 import { APP_VERSION, openExternalLink, type ExternalLinkId, type ExternalLinkLocale } from '@/config/about'
 
 const props = defineProps<{
@@ -162,7 +163,18 @@ async function handleExternalLink(linkId: ExternalLinkId) {
                 <ArrowUpRightIcon :size="14" />
               </button>
               <button type="button" data-external-link="github" @click="handleExternalLink('github')">
-                <GitForkIcon :size="17" />
+                <img
+                  class="about-panel__link-icon about-panel__link-icon--github-light"
+                  :src="githubInvertocatBlack"
+                  alt=""
+                  aria-hidden="true"
+                >
+                <img
+                  class="about-panel__link-icon about-panel__link-icon--github-dark"
+                  :src="githubInvertocatWhite"
+                  alt=""
+                  aria-hidden="true"
+                >
                 {{ t('about.credits.github') }}
                 <ArrowUpRightIcon :size="14" />
               </button>

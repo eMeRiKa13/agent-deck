@@ -407,6 +407,8 @@ describe('Agent dashboard', () => {
     expect(panel?.querySelectorAll('[data-external-link]')).toHaveLength(3)
     expect(panel?.querySelector('[data-external-link="enchanter"] img.about-panel__link-icon'))
       .not.toBeNull()
+    expect(panel?.querySelectorAll('[data-external-link="github"] img.about-panel__link-icon'))
+      .toHaveLength(2)
 
     document.body.querySelector<HTMLButtonElement>('[data-about-close]')?.click()
     await flushPromises()
