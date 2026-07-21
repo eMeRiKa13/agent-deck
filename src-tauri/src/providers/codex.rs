@@ -1,4 +1,8 @@
-use std::{path::PathBuf, process::Stdio};
+use std::{
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::UNIX_EPOCH,
+};
 
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
@@ -49,6 +53,7 @@ struct ThreadRow {
     first_user_message: String,
 }
 
+// Load the newest visible Codex threads from the most relevant local state database.
 fn load_sessions() -> Result<Vec<AgentSession>, String> {
     let home = home_dir()?;
     let db_path = find_codex_state_db(&home).ok_or("Aucun état local Codex trouvé")?;
@@ -95,24 +100,58 @@ fn load_sessions() -> Result<Vec<AgentSession>, String> {
         })
         .map_err(|error| error.to_string())?;
 
-    rows.map(|row| row.map_err(|error| error.to_string()))
-        .map(|row| row.map(thread_to_session))
-        .collect()
+    let rows = rows
+        .map(|row| row.map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    rows.into_iter().map(thread_to_session).collect()
 }
 
-fn find_codex_state_db(home: &std::path::Path) -> Option<PathBuf> {
+// Prefer a readable database with the newest thread instead of relying on path order.
+fn find_codex_state_db(home: &Path) -> Option<PathBuf> {
     [
         home.join(".codex/state_5.sqlite"),
         home.join(".codex/sqlite/state_5.sqlite"),
     ]
     .into_iter()
-    .find(|path| path.exists())
+    .filter(|path| path.exists())
+    .max_by_key(|path| codex_db_rank(path))
 }
 
-fn thread_to_session(row: ThreadRow) -> AgentSession {
+// Rank readable schemas first, then use latest thread activity and file modification as tie-breakers.
+fn codex_db_rank(path: &Path) -> (bool, i64, u128) {
+    let latest_thread_ms = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()
+    .and_then(|connection| {
+        connection
+            .query_row(
+                "SELECT MAX(COALESCE(updated_at_ms, updated_at * 1000, 0)) FROM threads",
+                [],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .ok()
+            .flatten()
+    });
+    let modified_ns = path
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    (
+        latest_thread_ms.is_some(),
+        latest_thread_ms.unwrap_or_default(),
+        modified_ns,
+    )
+}
+
+fn thread_to_session(row: ThreadRow) -> Result<AgentSession, String> {
     let path = PathBuf::from(&row.rollout_path);
     let events = if path.exists() {
-        parse_events(&path, row.updated_at)
+        parse_events(&path, row.updated_at)?
     } else {
         Vec::new()
     };
@@ -132,7 +171,7 @@ fn thread_to_session(row: ThreadRow) -> AgentSession {
         SessionStatus::Completed
     };
 
-    AgentSession {
+    Ok(AgentSession {
         id: format!("codex:{}", row.id),
         provider: ProviderId::Codex,
         title: {
@@ -166,11 +205,13 @@ fn thread_to_session(row: ThreadRow) -> AgentSession {
             .map(|value| UiText::from(truncate(value, 180)))
             .unwrap_or_else(|| UiText::message("generated.codexConversation")),
         events,
-    }
+    })
 }
 
-fn parse_events(path: &std::path::Path, fallback_ms: i64) -> Vec<SessionEvent> {
-    let lines = tail_lines(path, 512 * 1024).unwrap_or_default();
+// Parse only recent rollout records while surfacing I/O and encoding failures to the provider.
+fn parse_events(path: &Path, fallback_ms: i64) -> Result<Vec<SessionEvent>, String> {
+    let lines = tail_lines(path, 512 * 1024)
+        .map_err(|error| format!("Historique Codex illisible ({}): {error}", path.display()))?;
     let mut events = Vec::new();
     for (index, line) in lines.iter().enumerate() {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
@@ -227,9 +268,10 @@ fn parse_events(path: &std::path::Path, fallback_ms: i64) -> Vec<SessionEvent> {
     if events.len() > 6 {
         events.drain(..events.len() - 6);
     }
-    events
+    Ok(events)
 }
 
+// Exchange the minimum RPC messages required to read the authenticated account and its limits.
 async fn load_quota() -> Result<ProviderQuota, String> {
     let binary = find_codex_binary();
     let mut child = Command::new(&binary)
@@ -306,14 +348,28 @@ async fn load_quota() -> Result<ProviderQuota, String> {
                 break;
             }
         }
-        Ok::<_, String>((account.unwrap_or_default(), rate_limits.unwrap_or_default()))
+        complete_quota_exchange(account, rate_limits)
     };
 
     let result = timeout(Duration::from_secs(12), exchange)
         .await
         .map_err(|_| "Délai dépassé pour codex app-server".to_string())??;
     child.kill().await.ok();
-    Ok(parse_quota(&result.0, &result.1))
+    parse_quota(&result.0, &result.1)
+}
+
+// Turn premature app-server EOF into an explicit provider warning instead of empty quota data.
+fn complete_quota_exchange(
+    account: Option<Value>,
+    rate_limits: Option<Value>,
+) -> Result<(Value, Value), String> {
+    let account = account.ok_or_else(|| {
+        "codex app-server a fermé la connexion avant la réponse du compte".to_string()
+    })?;
+    let rate_limits = rate_limits.ok_or_else(|| {
+        "codex app-server a fermé la connexion avant la réponse des quotas".to_string()
+    })?;
+    Ok((account, rate_limits))
 }
 
 fn find_codex_binary() -> PathBuf {
@@ -332,9 +388,16 @@ fn find_codex_binary() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("codex"))
 }
 
-fn parse_quota(account: &Value, response: &Value) -> ProviderQuota {
-    let account = &account["account"];
-    let snapshot = &response["rateLimits"];
+// Validate the private RPC response before translating it into the stable dashboard model.
+fn parse_quota(account: &Value, response: &Value) -> Result<ProviderQuota, String> {
+    let account = account
+        .get("account")
+        .filter(|value| value.is_object())
+        .ok_or_else(|| "Réponse compte Codex incomplète".to_string())?;
+    let snapshot = response
+        .get("rateLimits")
+        .filter(|value| value.is_object())
+        .ok_or_else(|| "Réponse quotas Codex incomplète".to_string())?;
     let source_windows = ["primary", "secondary"]
         .into_iter()
         .filter_map(|key| {
@@ -344,6 +407,15 @@ fn parse_quota(account: &Value, response: &Value) -> ProviderQuota {
                 .map(|window| (key, window))
         })
         .collect::<Vec<_>>();
+    if source_windows.is_empty() {
+        return Err("Réponse quotas Codex sans fenêtre d’utilisation".to_string());
+    }
+    if source_windows
+        .iter()
+        .any(|(_, window)| !window["usedPercent"].is_number())
+    {
+        return Err("Fenêtre de quota Codex sans pourcentage utilisé".to_string());
+    }
     let has_single_window = source_windows.len() == 1;
     let mut windows = Vec::new();
     for (key, window) in source_windows {
@@ -363,7 +435,7 @@ fn parse_quota(account: &Value, response: &Value) -> ProviderQuota {
         .as_str()
         .and_then(|balance| balance.parse::<f64>().ok())
         .map(|value| UsageCost::Credits { value });
-    ProviderQuota {
+    Ok(ProviderQuota {
         provider: ProviderId::Codex,
         plan: title_case(account["planType"].as_str().unwrap_or("Codex")),
         account: account["email"]
@@ -372,7 +444,7 @@ fn parse_quota(account: &Value, response: &Value) -> ProviderQuota {
             .unwrap_or_else(|| UiText::message("generated.codexAccount")),
         windows,
         cost: credits,
-    }
+    })
 }
 
 fn codex_window_identity(
@@ -405,7 +477,58 @@ fn title_case(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, time::SystemTime};
+
     use super::*;
+
+    struct TemporaryHome(PathBuf);
+
+    impl TemporaryHome {
+        fn new(name: &str) -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock after Unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "agent-deck-codex-{name}-{}-{unique}",
+                std::process::id()
+            ));
+            fs::create_dir_all(path.join(".codex/sqlite")).expect("create temporary Codex home");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+
+        fn create_state_db(&self, nested: bool, updated_at_ms: i64) -> PathBuf {
+            let path = if nested {
+                self.0.join(".codex/sqlite/state_5.sqlite")
+            } else {
+                self.0.join(".codex/state_5.sqlite")
+            };
+            let connection = Connection::open(&path).expect("create state database");
+            connection
+                .execute(
+                    "CREATE TABLE threads (updated_at_ms INTEGER, updated_at INTEGER)",
+                    [],
+                )
+                .expect("create threads table");
+            connection
+                .execute(
+                    "INSERT INTO threads (updated_at_ms, updated_at) VALUES (?1, 0)",
+                    [updated_at_ms],
+                )
+                .expect("insert thread timestamp");
+            path
+        }
+    }
+
+    impl Drop for TemporaryHome {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).ok();
+        }
+    }
 
     #[test]
     fn maps_current_single_global_rate_limit_response() {
@@ -420,7 +543,7 @@ mod tests {
             "secondary": null,
             "credits": {"balance": "12.50"}
         }});
-        let quota = parse_quota(&account, &limits);
+        let quota = parse_quota(&account, &limits).expect("valid current quota");
 
         assert_eq!(quota.windows.len(), 1);
         assert_eq!(quota.windows[0].id, "codex-global");
@@ -452,7 +575,7 @@ mod tests {
                 "windowDurationMins": 10_080
             }
         }});
-        let quota = parse_quota(&account, &limits);
+        let quota = parse_quota(&account, &limits).expect("valid legacy quota");
 
         assert_eq!(quota.windows.len(), 2);
         assert!(matches!(
@@ -463,6 +586,55 @@ mod tests {
             &quota.windows[1].label,
             UiText::Message { key, .. } if key == "quota.global"
         ));
+    }
+
+    #[test]
+    fn selects_database_with_the_newest_thread() {
+        let home = TemporaryHome::new("database-recency");
+        home.create_state_db(false, 1_000);
+        let expected = home.create_state_db(true, 2_000);
+
+        assert_eq!(find_codex_state_db(home.path()), Some(expected));
+    }
+
+    #[test]
+    fn prefers_a_readable_state_database_over_an_invalid_candidate() {
+        let home = TemporaryHome::new("database-validity");
+        let expected = home.create_state_db(false, 1_000);
+        fs::write(
+            home.path().join(".codex/sqlite/state_5.sqlite"),
+            b"not a sqlite database",
+        )
+        .expect("write invalid database");
+
+        assert_eq!(find_codex_state_db(home.path()), Some(expected));
+    }
+
+    #[test]
+    fn incomplete_quota_exchange_reports_the_missing_response() {
+        let account = Some(json!({"account": {"planType": "pro"}}));
+
+        let error = complete_quota_exchange(account, None).expect_err("missing rate limits");
+
+        assert!(error.contains("réponse des quotas"));
+    }
+
+    #[test]
+    fn rejects_quota_without_required_structure() {
+        let account = json!({"account": {"planType": "pro"}});
+
+        let missing_limits = parse_quota(&account, &json!({})).expect_err("missing rateLimits");
+        let missing_windows =
+            parse_quota(&account, &json!({"rateLimits": {}})).expect_err("missing quota window");
+        let missing_percent = parse_quota(
+            &account,
+            &json!({"rateLimits": {"primary": {"windowDurationMins": 10_080}}}),
+        )
+        .expect_err("missing used percentage");
+
+        assert!(missing_limits.contains("incomplète"));
+        assert!(missing_windows.contains("sans fenêtre"));
+        assert!(missing_percent.contains("pourcentage"));
     }
 
     #[test]
