@@ -2273,22 +2273,20 @@ body {
 
 .about-panel__display {
   align-items: flex-start;
-  gap: 13px;
+  gap: 12px;
   margin-top: 15px;
-  border: 1px solid color-mix(in oklab, var(--orange) 24%, var(--border));
-  border-radius: 15px;
-  background: color-mix(in oklab, var(--amber-soft) 42%, var(--surface-elevated));
-  padding: 15px;
+  border: 0;
+  background: transparent;
+  padding: 0 1px;
 }
 
 .about-panel__section-icon {
   display: grid;
-  width: 36px;
-  height: 36px;
-  flex: 0 0 36px;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
   place-items: center;
-  border-radius: 11px;
-  background: color-mix(in oklab, var(--orange) 16%, var(--surface-elevated));
+  background: transparent;
   color: var(--orange);
 }
 
@@ -2463,10 +2461,6 @@ body {
 
   .about-panel__body {
     padding: 16px 17px 14px;
-  }
-
-  .about-panel__display {
-    padding: 13px;
   }
 
   .about-panel__footer {
