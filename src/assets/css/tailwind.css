@@ -2395,6 +2395,31 @@ body {
   backdrop-filter: blur(7px);
 }
 
+.session-detail-enter-active .conversation-backdrop,
+.session-detail-leave-active .conversation-backdrop {
+  transition: opacity 180ms ease;
+}
+
+.session-detail-enter-active .conversation-panel,
+.session-detail-leave-active .conversation-panel {
+  will-change: transform, opacity;
+  transition:
+    transform 280ms cubic-bezier(.22, 1, .36, 1),
+    opacity 180ms ease;
+}
+
+.session-detail-enter-from .conversation-backdrop,
+.session-detail-leave-to .conversation-backdrop,
+.session-detail-enter-from .conversation-panel,
+.session-detail-leave-to .conversation-panel {
+  opacity: 0;
+}
+
+.session-detail-enter-from .conversation-panel,
+.session-detail-leave-to .conversation-panel {
+  transform: translate3d(64px, 0, 0);
+}
+
 .conversation-panel {
   grid-template-rows: auto minmax(0, 1fr);
 }
@@ -2920,5 +2945,14 @@ body {
 
   .session-metric strong {
     font-size: 18px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-detail-enter-active .conversation-backdrop,
+  .session-detail-leave-active .conversation-backdrop,
+  .session-detail-enter-active .conversation-panel,
+  .session-detail-leave-active .conversation-panel {
+    transition: none;
   }
 }

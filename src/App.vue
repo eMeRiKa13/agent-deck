@@ -143,24 +143,26 @@ function openAbout() {
   </div>
 
   <Teleport to="body">
-    <div
-      v-if="selectedSession && isCompactDetail && isSessionDetailOpen"
-      class="conversation-overlay"
-    >
-      <button
-        type="button"
-        class="conversation-backdrop"
-        :aria-label="t('detail.close')"
-        @click="isSessionDetailOpen = false"
-      />
-      <SessionDetail
-        :session="selectedSession"
-        compact
-        open
-        class="conversation-panel--open"
-        @close="isSessionDetailOpen = false"
-      />
-    </div>
+    <Transition name="session-detail">
+      <div
+        v-if="selectedSession && isCompactDetail && isSessionDetailOpen"
+        class="conversation-overlay"
+      >
+        <button
+          type="button"
+          class="conversation-backdrop"
+          :aria-label="t('detail.close')"
+          @click="isSessionDetailOpen = false"
+        />
+        <SessionDetail
+          :session="selectedSession"
+          compact
+          open
+          class="conversation-panel--open"
+          @close="isSessionDetailOpen = false"
+        />
+      </div>
+    </Transition>
   </Teleport>
 
   <AboutPanel :open="isAboutOpen" @close="isAboutOpen = false" />
