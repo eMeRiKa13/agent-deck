@@ -52,7 +52,7 @@ pnpm install
 pnpm dev:desktop
 ```
 
-Tauri starts the frontend at `http://127.0.0.1:1421` and opens the native macOS window. Agent Deck begins polling the available local providers automatically.
+Tauri starts the frontend at `http://127.0.0.1:1421` and opens the native macOS window. Agent Deck refreshes local sessions every 15 seconds and usage quotas every 2 minutes. A manual refresh updates both immediately.
 
 To work on the interface in a browser without reading local application data, run the demo adapter:
 

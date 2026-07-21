@@ -59,6 +59,7 @@ export function useDashboard() {
         .length ?? 0,
   )
 
+  // Merge lightweight session refreshes without discarding the slower quota state.
   async function performLoad(includeQuotas: boolean) {
     error.value = null
     try {
@@ -83,6 +84,7 @@ export function useDashboard() {
     return request
   }
 
+  // Coalesce overlapping polls and promote a queued request when fresh quotas are required.
   function load(includeQuotas: boolean): Promise<void> {
     if (!pendingLoad) return startLoad(includeQuotas)
     if (!includeQuotas || pendingLoadIncludesQuotas) return pendingLoad
