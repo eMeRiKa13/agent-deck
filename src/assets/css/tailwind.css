@@ -1836,6 +1836,17 @@ body {
 }
 
 @media (max-width: 1399px) {
+  .refresh-control__updated,
+  .refresh-control__separator {
+    display: none;
+  }
+
+  .dashboard-topbar__actions .refresh-control {
+    min-width: 118px;
+  }
+}
+
+@media (max-width: 899px) {
   .dashboard-topbar__summary {
     display: none;
   }
