@@ -2385,6 +2385,14 @@ body {
   color: var(--orange);
 }
 
+.about-panel__link-icon {
+  display: block;
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+  object-fit: contain;
+}
+
 .about-panel__links button svg:last-child {
   color: var(--faint-foreground);
 }

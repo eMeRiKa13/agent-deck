@@ -2,7 +2,6 @@
 import {
   ArrowUpRightIcon,
   GitForkIcon,
-  Globe2Icon,
   MonitorIcon,
   ShieldCheckIcon,
   XIcon,
@@ -10,6 +9,7 @@ import {
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import agentDeckMark from '@/assets/branding/agent-deck-mark.png'
+import enchanterFavicon from '@/assets/branding/enchanter-favicon.ico'
 import { APP_VERSION, openExternalLink, type ExternalLinkId, type ExternalLinkLocale } from '@/config/about'
 
 const props = defineProps<{
@@ -157,7 +157,7 @@ async function handleExternalLink(linkId: ExternalLinkId) {
 
             <div class="about-panel__links">
               <button type="button" data-external-link="enchanter" @click="handleExternalLink('enchanter')">
-                <Globe2Icon :size="17" />
+                <img class="about-panel__link-icon" :src="enchanterFavicon" alt="" aria-hidden="true">
                 {{ t('about.credits.website') }}
                 <ArrowUpRightIcon :size="14" />
               </button>
