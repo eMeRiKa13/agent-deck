@@ -70,6 +70,7 @@ pub(crate) fn partial_snapshot(
     quota: Option<Result<ProviderQuota, String>>,
 ) -> Result<ProviderSnapshot, String> {
     let mut warnings = Vec::new();
+    let sessions_loaded = sessions.is_ok();
     let sessions = match sessions {
         Ok(sessions) => sessions,
         Err(error) => {
@@ -87,7 +88,7 @@ pub(crate) fn partial_snapshot(
         None => None,
     };
 
-    let has_requested_data = !sessions.is_empty() || (quota_requested && quota.is_some());
+    let has_requested_data = sessions_loaded || (quota_requested && quota.is_some());
     if !has_requested_data {
         return Err(warnings.join(" · "));
     }
@@ -182,5 +183,14 @@ mod tests {
 
         assert!(error.contains("sessions unavailable"));
         assert!(error.contains("quota unavailable"));
+    }
+
+    #[test]
+    fn accepts_an_empty_successful_session_result_without_quotas() {
+        let snapshot = partial_snapshot(Ok(Vec::new()), None).expect("connected empty provider");
+
+        assert!(snapshot.sessions.is_empty());
+        assert!(snapshot.quota.is_none());
+        assert!(snapshot.warning.is_none());
     }
 }

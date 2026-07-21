@@ -9,6 +9,34 @@ import { localeTag, translateUiText } from '@/i18n/format'
 const POLLING_INTERVAL_MS = 15_000
 const QUOTA_POLLING_INTERVAL_MS = 120_000
 
+// Retain the last known quotas and their warning while a lightweight session poll is running.
+function mergeDashboardSnapshot(
+  previous: DashboardSnapshot | null,
+  next: DashboardSnapshot,
+  includeQuotas: boolean,
+): DashboardSnapshot {
+  if (!previous) return next
+
+  const nextQuotaProviders = new Set(next.quotas.map((quota) => quota.provider))
+  const preservedQuotas = previous.quotas.filter((quota) => !nextQuotaProviders.has(quota.provider))
+  const previousProviders = new Map(previous.providers.map((provider) => [provider.id, provider]))
+  const providers = includeQuotas
+    ? next.providers
+    : next.providers.map((provider) => {
+        const hasPreservedQuota = preservedQuotas.some((quota) => quota.provider === provider.id)
+        const previousError = previousProviders.get(provider.id)?.error
+        return hasPreservedQuota && !provider.error && previousError
+          ? { ...provider, error: previousError }
+          : provider
+      })
+
+  return {
+    ...next,
+    providers,
+    quotas: [...next.quotas, ...preservedQuotas],
+  }
+}
+
 export function useDashboard() {
   const adapter = createProviderAdapter()
   const { t, locale } = useI18n({ useScope: 'global' })
@@ -64,9 +92,7 @@ export function useDashboard() {
     error.value = null
     try {
       const nextSnapshot = await adapter.getSnapshot({ includeQuotas })
-      snapshot.value = !includeQuotas && snapshot.value
-        ? { ...nextSnapshot, quotas: snapshot.value.quotas }
-        : nextSnapshot
+      snapshot.value = mergeDashboardSnapshot(snapshot.value, nextSnapshot, includeQuotas)
     } catch (reason) {
       error.value = reason instanceof Error ? reason.message : String(reason)
     }

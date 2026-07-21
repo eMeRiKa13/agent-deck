@@ -17,16 +17,24 @@ use crate::{
 };
 
 pub async fn load(include_quotas: bool) -> Result<ProviderSnapshot, String> {
-    let sessions = match tokio::task::spawn_blocking(load_sessions).await {
-        Ok(result) => result,
-        Err(error) => Err(format!("Lecture Cursor interrompue : {error}")),
+    let (sessions, session_warning) = match tokio::task::spawn_blocking(load_sessions).await {
+        Ok(Ok((sessions, warning))) => (Ok(sessions), warning),
+        Ok(Err(error)) => (Err(error), None),
+        Err(error) => (Err(format!("Lecture Cursor interrompue : {error}")), None),
     };
     let quota = if include_quotas {
         Some(load_quota().await)
     } else {
         None
     };
-    partial_snapshot(sessions, quota)
+    let mut snapshot = partial_snapshot(sessions, quota)?;
+    if let Some(warning) = session_warning {
+        snapshot.warning = Some(match snapshot.warning {
+            Some(existing) => format!("{existing} · {warning}"),
+            None => warning,
+        });
+    }
+    Ok(snapshot)
 }
 
 fn db_path() -> Result<std::path::PathBuf, String> {
@@ -54,7 +62,7 @@ struct HeaderRow {
 }
 
 // Read recent Composer headers and attach their complete local usage history.
-fn load_sessions() -> Result<Vec<AgentSession>, String> {
+fn load_sessions() -> Result<(Vec<AgentSession>, Option<String>), String> {
     let path = db_path()?;
     if !path.exists() {
         return Err("Aucun état local Cursor trouvé".to_string());
@@ -70,7 +78,7 @@ fn load_sessions() -> Result<Vec<AgentSession>, String> {
              LIMIT 10",
         )
         .map_err(|error| format!("Schéma Cursor incompatible : {error}"))?;
-    let headers = statement
+    let rows = statement
         .query_map([], |row| {
             Ok(HeaderRow {
                 composer_id: row.get(0)?,
@@ -80,20 +88,55 @@ fn load_sessions() -> Result<Vec<AgentSession>, String> {
                 value: row.get(4)?,
             })
         })
-        .map_err(|error| error.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("En-tête Cursor illisible : {error}"))?;
+        .map_err(|error| error.to_string())?;
+    let mut headers = Vec::new();
+    let mut warnings = Vec::new();
+    for row in rows {
+        match row {
+            Ok(header) => headers.push(header),
+            Err(error) => warnings.push(format!("En-tête Cursor illisible : {error}")),
+        }
+    }
     drop(statement);
 
-    let sessions = headers
-        .into_iter()
-        .map(|header| header_to_session(&connection, header))
-        .collect::<Result<Vec<_>, _>>()?;
-    if sessions.is_empty() {
-        Err("Aucune conversation Cursor trouvée".to_string())
-    } else {
-        Ok(sessions)
+    let (sessions, conversion_warning) = sessions_from_headers(&connection, headers)?;
+    if let Some(warning) = conversion_warning {
+        warnings.push(warning);
     }
+    if sessions.is_empty() {
+        Err(if warnings.is_empty() {
+            "Aucune conversation Cursor trouvée".to_string()
+        } else {
+            warnings.join(" · ")
+        })
+    } else {
+        Ok((
+            sessions,
+            (!warnings.is_empty()).then(|| warnings.join(" · ")),
+        ))
+    }
+}
+
+// Preserve valid conversations while reporting malformed headers or bubble histories.
+fn sessions_from_headers(
+    connection: &Connection,
+    headers: Vec<HeaderRow>,
+) -> Result<(Vec<AgentSession>, Option<String>), String> {
+    let mut sessions = Vec::new();
+    let mut warnings = Vec::new();
+    for header in headers {
+        match header_to_session(connection, header) {
+            Ok(session) => sessions.push(session),
+            Err(error) => warnings.push(error),
+        }
+    }
+    if sessions.is_empty() && !warnings.is_empty() {
+        return Err(warnings.join(" · "));
+    }
+    Ok((
+        sessions,
+        (!warnings.is_empty()).then(|| warnings.join(" · ")),
+    ))
 }
 
 fn header_to_session(connection: &Connection, row: HeaderRow) -> Result<AgentSession, String> {
@@ -508,8 +551,60 @@ mod tests {
     }
 
     #[test]
+    fn preserves_valid_sessions_when_one_conversation_is_corrupt() {
+        let connection = Connection::open_in_memory().expect("in-memory database");
+        connection
+            .execute(
+                "CREATE TABLE cursorDiskKV (key TEXT UNIQUE, value BLOB)",
+                [],
+            )
+            .expect("Cursor bubble table");
+        connection
+            .execute(
+                "INSERT INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
+                rusqlite::params![
+                    "bubbleId:good:one",
+                    json!({
+                        "bubbleId": "one",
+                        "type": 1,
+                        "text": "valid session",
+                        "createdAt": 1_000
+                    })
+                    .to_string()
+                ],
+            )
+            .expect("valid bubble row");
+        connection
+            .execute(
+                "INSERT INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
+                rusqlite::params!["bubbleId:broken:one", "not-json"],
+            )
+            .expect("invalid bubble row");
+        let headers = ["good", "broken"]
+            .into_iter()
+            .map(|composer_id| HeaderRow {
+                composer_id: composer_id.to_string(),
+                workspace_id: "workspace".to_string(),
+                created_at: 1_000,
+                updated_at: 1_000,
+                value: json!({"name": composer_id}).to_string(),
+            })
+            .collect();
+
+        let (sessions, warning) =
+            sessions_from_headers(&connection, headers).expect("partial Cursor sessions");
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "cursor:good");
+        assert!(warning.is_some());
+    }
+
+    #[test]
     #[ignore = "dépend des données Cursor installées sur la machine"]
     fn reads_local_composers() {
-        assert!(!load_sessions().expect("historique Cursor local").is_empty());
+        assert!(!load_sessions()
+            .expect("historique Cursor local")
+            .0
+            .is_empty());
     }
 }

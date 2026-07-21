@@ -102,7 +102,13 @@ describe('Agent dashboard', () => {
 
   it('polls sessions without reloading or clearing the quotas', async () => {
     vi.useFakeTimers()
-    const initialSnapshot = await new DemoProviderAdapter().getSnapshot()
+    const demoSnapshot = await new DemoProviderAdapter().getSnapshot()
+    const initialSnapshot = {
+      ...demoSnapshot,
+      providers: demoSnapshot.providers.map((provider) => provider.id === 'codex'
+        ? { ...provider, error: { key: 'errors.providerPartial', params: { provider: 'Codex' } } }
+        : provider),
+    }
     const getSnapshot = vi.spyOn(DemoProviderAdapter.prototype, 'getSnapshot')
       .mockResolvedValueOnce(initialSnapshot)
       .mockResolvedValueOnce({
@@ -123,6 +129,10 @@ describe('Agent dashboard', () => {
     expect(getSnapshot.mock.calls[1]?.[0]).toEqual({ includeQuotas: false })
     expect(wrapper.findAll('.quota-card')).toHaveLength(3)
     expect(wrapper.text()).not.toContain('Construire le tableau de bord agents')
+    const codexProvider = wrapper
+      .findAll('.provider-nav-item')
+      .find((provider) => provider.text().includes('Codex'))
+    expect(codexProvider?.attributes('title')).toContain('Certaines données Codex sont indisponibles')
   })
 
   it('uses the resolved system theme when leaving automatic mode', async () => {
