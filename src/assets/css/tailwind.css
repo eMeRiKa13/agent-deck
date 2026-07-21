@@ -184,8 +184,7 @@ input:focus-visible {
   color: var(--foreground);
 }
 
-.sidebar-nav-item:disabled,
-.session-search button:disabled {
+.sidebar-nav-item:disabled {
   cursor: default;
   opacity: 0.45;
 }
@@ -469,6 +468,7 @@ input:focus-visible {
 }
 
 .session-search {
+  position: relative;
   display: flex;
   height: 38px;
   flex: 0 0 38px;
@@ -496,7 +496,8 @@ input:focus-visible {
   color: var(--faint-foreground);
 }
 
-.session-search button {
+.session-filter-trigger {
+  position: relative;
   display: grid;
   width: 36px;
   height: 36px;
@@ -505,6 +506,76 @@ input:focus-visible {
   border-left: 1px solid var(--border);
   background: transparent;
   color: var(--muted-foreground);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.session-filter-trigger:hover,
+.session-filter-trigger[aria-expanded='true'] {
+  background: var(--hover);
+  color: var(--foreground);
+}
+
+.session-filter-trigger--active {
+  background: var(--amber-soft);
+  color: var(--orange);
+}
+
+.session-filter-trigger__count {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: grid;
+  min-width: 14px;
+  height: 14px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--orange);
+  color: white;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.status-filter-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: -1px;
+  z-index: 20;
+  width: min(230px, calc(100vw - 32px));
+  padding: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 13px;
+  background: color-mix(in oklab, var(--background) 92%, white);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 24%);
+}
+
+.status-filter-option {
+  display: flex;
+  width: 100%;
+  min-height: 40px;
+  align-items: center;
+  justify-content: space-between;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  padding: 6px 9px;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.status-filter-option:hover,
+.status-filter-option:focus-visible,
+.status-filter-option--selected {
+  background: var(--hover);
+  color: var(--foreground);
+}
+
+.status-filter-option > svg {
+  color: var(--orange);
 }
 
 .session-list {
@@ -627,8 +698,8 @@ input:focus-visible {
 }
 
 .status-pill--waiting {
-  background: var(--surface-subtle);
-  color: var(--muted-foreground);
+  background: var(--amber-soft);
+  color: color-mix(in oklab, var(--orange) 82%, var(--foreground));
 }
 
 .status-pill--completed {
@@ -1420,9 +1491,22 @@ body {
   font-size: 15px;
 }
 
-.session-search button {
+.session-filter-trigger {
   width: 46px;
   height: 46px;
+}
+
+.status-filter-menu {
+  width: min(260px, calc(100vw - 32px));
+  padding: 7px;
+  border-radius: 16px;
+}
+
+.status-filter-option {
+  min-height: 46px;
+  border-radius: 11px;
+  padding: 7px 11px;
+  font-size: 14px;
 }
 
 .session-list {

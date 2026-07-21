@@ -2,7 +2,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useTimeoutPoll } from '@vueuse/core'
 import { createProviderAdapter } from '@/data/tauri'
-import type { AgentSession, DashboardSnapshot, ProviderId, UiText } from '@/domain/dashboard'
+import type { AgentSession, DashboardSnapshot, ProviderId, SessionStatus, UiText } from '@/domain/dashboard'
 import type { SupportedLocale } from '@/i18n'
 import { localeTag, translateUiText } from '@/i18n/format'
 
@@ -43,6 +43,7 @@ export function useDashboard() {
   const activeProvider = ref<ProviderId | 'all'>('all')
   const selectedSessionId = ref('')
   const search = ref('')
+  const statusFilter = ref<SessionStatus[]>([])
   const refreshing = ref(false)
   const error = ref<string | null>(null)
   let pendingLoad: Promise<void> | null = null
@@ -55,12 +56,13 @@ export function useDashboard() {
     const query = search.value.trim().toLocaleLowerCase(tag)
     return (snapshot.value?.sessions ?? []).filter((session) => {
       const matchesProvider = activeProvider.value === 'all' || session.provider === activeProvider.value
+      const matchesStatus = statusFilter.value.length === 0 || statusFilter.value.includes(session.status)
       const matchesSearch =
         query.length === 0 ||
         `${translateUiText(session.title, t)} ${translateUiText(session.project, t)} ${translateUiText(session.summary, t)}`
           .toLocaleLowerCase(tag)
           .includes(query)
-      return matchesProvider && matchesSearch
+      return matchesProvider && matchesSearch && matchesStatus
     })
   })
 
@@ -177,6 +179,7 @@ export function useDashboard() {
     activeCount,
     attentionCount,
     search,
+    statusFilter,
     refreshing,
     pollingIntervalSeconds: POLLING_INTERVAL_MS / 1_000,
     quotaPollingIntervalSeconds: QUOTA_POLLING_INTERVAL_MS / 1_000,

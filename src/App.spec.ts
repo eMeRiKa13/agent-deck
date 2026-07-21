@@ -63,7 +63,7 @@ describe('Agent dashboard', () => {
     await wrapper.get('input[type="search"]').setValue('aucun résultat possible')
 
     expect(wrapper.find('.conversation-panel').exists()).toBe(false)
-    expect(wrapper.text()).toContain('Aucune session ne correspond à cette recherche.')
+    expect(wrapper.text()).toContain('Aucune session ne correspond aux critères actuels.')
   })
 
   it('selects the first visible session when a refresh removes the current one', async () => {
@@ -280,15 +280,89 @@ describe('Agent dashboard', () => {
     expect(wrapper.findAll('.activity-group').length).toBeGreaterThan(0)
   })
 
-  it('disables unfinished navigation and filtering controls', async () => {
+  it('disables unfinished navigation and enables session filtering', async () => {
     const wrapper = mountApp()
     await flushPromises()
 
     expect(wrapper.get('[data-nav-item="activity"]').attributes('disabled')).toBeDefined()
     expect(wrapper.get('[data-nav-item="usage"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[data-session-filter]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-session-filter]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-session-filter]').attributes('aria-expanded')).toBe('false')
+    expect(wrapper.get('[data-session-filter]').attributes('aria-haspopup')).toBe('menu')
     expect(wrapper.text()).toContain('Sessions récentes')
     expect(wrapper.text()).toContain('Actualisation auto · 15 s')
+  })
+
+  it('filters sessions by one or several statuses and resets with all statuses', async () => {
+    const wrapper = mountApp()
+    await flushPromises()
+
+    const trigger = wrapper.get('[data-session-filter]')
+    await trigger.trigger('click')
+    await flushPromises()
+
+    expect(trigger.attributes('aria-expanded')).toBe('true')
+    expect(wrapper.get('[data-status-filter-menu]').attributes('role')).toBe('menu')
+    expect(wrapper.findAll('[data-status-filter]')).toHaveLength(5)
+    expect(wrapper.get('[data-status-filter="all"]').attributes('aria-checked')).toBe('true')
+
+    await wrapper.get('[data-status-filter="waiting"]').trigger('click')
+    expect(wrapper.findAll('[data-session-row]')).toHaveLength(1)
+    expect(wrapper.get('[data-session-row]').text()).toContain('Revoir le moteur de synchronisation')
+    expect(wrapper.get('[data-session-row]').classes()).toContain('session-row--selected')
+    expect(trigger.text()).toContain('1')
+    expect(trigger.attributes('aria-label')).toBe('1 statut sélectionné')
+
+    await wrapper.get('[data-status-filter="attention"]').trigger('click')
+    expect(wrapper.findAll('[data-session-row]')).toHaveLength(2)
+    expect(wrapper.get('[data-status-filter="waiting"]').attributes('aria-checked')).toBe('true')
+    expect(wrapper.get('[data-status-filter="attention"]').attributes('aria-checked')).toBe('true')
+
+    await wrapper.get('[data-status-filter="all"]').trigger('click')
+    expect(wrapper.findAll('[data-session-row]')).toHaveLength(6)
+    expect(wrapper.get('.session-column .panel-heading__count').text()).toBe('6')
+    expect(trigger.attributes('aria-label')).toBe('Filtrer par statut')
+  })
+
+  it('intersects status filters with search and provider filters', async () => {
+    const wrapper = mountApp()
+    await flushPromises()
+
+    await wrapper.get('[data-session-filter]').trigger('click')
+    await wrapper.get('[data-status-filter="waiting"]').trigger('click')
+    await wrapper.get('input[type="search"]').setValue('Revoir le moteur')
+
+    expect(wrapper.findAll('[data-session-row]')).toHaveLength(1)
+
+    const cursorProvider = wrapper
+      .findAll('.provider-nav-item')
+      .find((provider) => provider.text().includes('Cursor'))
+    await cursorProvider?.trigger('click')
+
+    expect(wrapper.findAll('[data-session-row]')).toHaveLength(0)
+    expect(wrapper.text()).toContain('Aucune session ne correspond aux critères actuels.')
+    expect(wrapper.find('.conversation-panel').exists()).toBe(false)
+  })
+
+  it('closes the status menu with Escape or an outside click and restores focus on Escape', async () => {
+    const wrapper = mountApp()
+    await flushPromises()
+
+    const trigger = wrapper.get('[data-session-filter]')
+    await trigger.trigger('click')
+    await flushPromises()
+    expect(document.activeElement).toBe(wrapper.get('[data-status-filter="all"]').element)
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await flushPromises()
+    expect(wrapper.find('[data-status-filter-menu]').exists()).toBe(false)
+    expect(document.activeElement).toBe(trigger.element)
+
+    await trigger.trigger('click')
+    await flushPromises()
+    await wrapper.get('.dashboard-topbar').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-status-filter-menu]').exists()).toBe(false)
   })
 
   it('opens the bilingual read-only About panel and restores focus when it closes', async () => {
@@ -362,6 +436,12 @@ describe('Agent dashboard', () => {
     expect(document.documentElement.lang).toBe('en')
     expect(localStorage.getItem(LOCALE_STORAGE_KEY)).toBe('en')
     expect(selector.attributes('aria-label')).toBe('Change language')
+
+    await wrapper.get('[data-session-filter]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-status-filter-menu]').attributes('aria-label')).toBe('Filter sessions by status')
+    expect(wrapper.get('[data-status-filter="all"]').text()).toContain('All statuses')
+    expect(wrapper.get('[data-status-filter="waiting"]').text()).toContain('Waiting')
 
     await wrapper.get('[data-about-trigger]').trigger('click')
     await flushPromises()

@@ -26,6 +26,7 @@ const {
   activeCount,
   attentionCount,
   search,
+  statusFilter,
   refreshing,
   pollingIntervalSeconds,
   error,
@@ -115,6 +116,7 @@ function openAbout() {
       <div class="dashboard-workspace">
         <SessionList
           v-model:search="search"
+          v-model:status-filter="statusFilter"
           :sessions
           :selected-id="selectedSessionId"
           :inert="isSessionDetailModal"
