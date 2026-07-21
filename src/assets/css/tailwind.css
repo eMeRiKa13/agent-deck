@@ -9,7 +9,6 @@
 
 :root {
   color-scheme: light;
-  --agent-deck-mark-structure: #17171a;
   --background: oklch(0.975 0.002 80);
   --surface: oklch(0.995 0.001 80);
   --surface-elevated: oklch(1 0 0);
@@ -36,7 +35,6 @@
 
 .dark {
   color-scheme: dark;
-  --agent-deck-mark-structure: #fff;
   --background: oklch(0.145 0.004 70);
   --surface: oklch(0.18 0.005 70);
   --surface-elevated: oklch(0.205 0.006 70);
@@ -1289,7 +1287,26 @@ body {
 
 .agent-deck-mark {
   display: block;
-  color: var(--agent-deck-mark-structure);
+  aspect-ratio: 1024 / 561;
+}
+
+.agent-deck-mark__image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.agent-deck-mark__image--dark {
+  display: none;
+}
+
+.dark .agent-deck-mark__image--light {
+  display: none;
+}
+
+.dark .agent-deck-mark__image--dark {
+  display: block;
 }
 
 .app-sidebar__brand-mark .agent-deck-mark {
