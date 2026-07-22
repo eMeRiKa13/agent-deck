@@ -1,14 +1,18 @@
 use std::{
     collections::HashMap,
+    fs::File,
+    io::{BufRead, BufReader as StdBufReader},
     path::{Path, PathBuf},
     process::Stdio,
+    sync::{Mutex, OnceLock},
     time::UNIX_EPOCH,
 };
 
+use chrono::DateTime;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader},
     process::Command,
     time::{timeout, Duration},
 };
@@ -70,10 +74,26 @@ struct CodexHistory {
     collaboration_mode: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+struct IndexedThreadName {
+    title: String,
+    updated_at_ms: Option<i64>,
+}
+
+#[derive(Clone)]
+struct CachedThreadNames {
+    file_len: u64,
+    file_modified_ns: u128,
+    names: HashMap<String, String>,
+}
+
+static THREAD_NAME_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedThreadNames>>> = OnceLock::new();
+
 // Load the newest visible Codex threads from the most relevant local state database.
 fn load_sessions() -> Result<Vec<AgentSession>, String> {
     let home = home_dir()?;
     let db_path = find_codex_state_db(&home).ok_or("Aucun état local Codex trouvé")?;
+    let indexed_thread_names = cached_thread_names(&home.join(".codex/session_index.jsonl"));
 
     let connection = Connection::open_with_flags(
         &db_path,
@@ -142,9 +162,110 @@ fn load_sessions() -> Result<Vec<AgentSession>, String> {
                 .filter(|candidate| candidate.parent_thread_id.as_deref() == Some(row.id.as_str()))
                 .map(subagent_summary)
                 .collect();
-            thread_to_session(row, subagents)
+            let indexed_title = indexed_thread_names.get(&row.id).map(String::as_str);
+            thread_to_session(row, subagents, indexed_title)
         })
         .collect()
+}
+
+// Read optional app-level thread names without making the SQLite session source depend on them.
+fn cached_thread_names(path: &Path) -> HashMap<String, String> {
+    let Some((file_len, file_modified_ns)) = file_fingerprint(path) else {
+        return HashMap::new();
+    };
+    let cache = THREAD_NAME_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(names) = cache.lock().ok().and_then(|cache| {
+        cache
+            .get(path)
+            .filter(|cached| {
+                cached.file_len == file_len && cached.file_modified_ns == file_modified_ns
+            })
+            .map(|cached| cached.names.clone())
+    }) {
+        return names;
+    }
+
+    let names = parse_thread_names(path).unwrap_or_default();
+    let Some((current_len, current_modified_ns)) = file_fingerprint(path) else {
+        return names;
+    };
+    if current_len != file_len || current_modified_ns != file_modified_ns {
+        return names;
+    }
+
+    if let Ok(mut cache) = cache.lock() {
+        if cache.len() >= 64 {
+            cache.clear();
+        }
+        cache.insert(
+            path.to_path_buf(),
+            CachedThreadNames {
+                file_len,
+                file_modified_ns,
+                names: names.clone(),
+            },
+        );
+    }
+    names
+}
+
+fn file_fingerprint(path: &Path) -> Option<(u64, u128)> {
+    let metadata = path.metadata().ok()?;
+    let modified_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    Some((metadata.len(), modified_ns))
+}
+
+// Parse append-only name events and keep the newest valid timestamp for each thread.
+fn parse_thread_names(path: &Path) -> Result<HashMap<String, String>, String> {
+    let file = File::open(path).map_err(|error| error.to_string())?;
+    let mut names = HashMap::<String, IndexedThreadName>::new();
+    for line in StdBufReader::new(file).lines().map_while(Result::ok) {
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let Some(id) = value["id"]
+            .as_str()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        let Some(title) = value["thread_name"]
+            .as_str()
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+        else {
+            continue;
+        };
+        let updated_at_ms = value["updated_at"]
+            .as_str()
+            .and_then(|timestamp| DateTime::parse_from_rfc3339(timestamp).ok())
+            .map(|timestamp| timestamp.timestamp_millis());
+        let candidate = IndexedThreadName {
+            title: title.to_string(),
+            updated_at_ms,
+        };
+        let replace = names.get(id).is_none_or(|current| {
+            match (current.updated_at_ms, candidate.updated_at_ms) {
+                (Some(current), Some(candidate)) => candidate >= current,
+                (None, Some(_)) => true,
+                (Some(_), None) => false,
+                (None, None) => true,
+            }
+        });
+        if replace {
+            names.insert(id.to_string(), candidate);
+        }
+    }
+    Ok(names
+        .into_iter()
+        .map(|(id, entry)| (id, entry.title))
+        .collect())
 }
 
 fn parent_thread_id(source: &str) -> Option<String> {
@@ -231,6 +352,7 @@ fn codex_db_rank(path: &Path) -> (bool, i64, u128) {
 fn thread_to_session(
     row: ThreadRow,
     subagents: Vec<SubagentSummary>,
+    indexed_title: Option<&str>,
 ) -> Result<AgentSession, String> {
     let path = PathBuf::from(&row.rollout_path);
     let history = if path.exists() {
@@ -268,18 +390,7 @@ fn thread_to_session(
     Ok(AgentSession {
         id: format!("codex:{}", row.id),
         provider: ProviderId::Codex,
-        title: {
-            let source = if row.title.trim().is_empty() {
-                &row.first_user_message
-            } else {
-                &row.title
-            };
-            if source.trim().is_empty() {
-                UiText::message("generated.codexConversation")
-            } else {
-                UiText::from(truncate(source, 74))
-            }
-        },
+        title: session_title(indexed_title, &row.title, &row.first_user_message),
         project: project_name(&row.cwd),
         branch: if row.branch.is_empty() {
             "—".to_string()
@@ -311,6 +422,20 @@ fn thread_to_session(
         activity_groups: history.activity_groups,
         activity_truncated: history.activity_truncated,
     })
+}
+
+fn session_title(
+    indexed_title: Option<&str>,
+    sqlite_title: &str,
+    first_user_message: &str,
+) -> UiText {
+    let source = indexed_title
+        .filter(|title| !title.trim().is_empty())
+        .or_else(|| (!sqlite_title.trim().is_empty()).then_some(sqlite_title))
+        .or_else(|| (!first_user_message.trim().is_empty()).then_some(first_user_message));
+    source
+        .map(|title| UiText::from(truncate(title, 74)))
+        .unwrap_or_else(|| UiText::message("generated.codexConversation"))
 }
 
 fn non_empty(value: &str) -> Option<String> {
@@ -568,7 +693,7 @@ async fn load_quota() -> Result<ProviderQuota, String> {
         .stdout
         .take()
         .ok_or("Sortie app-server indisponible")?;
-    let mut lines = BufReader::new(stdout).lines();
+    let mut lines = TokioBufReader::new(stdout).lines();
 
     async fn send(stdin: &mut tokio::process::ChildStdin, value: Value) -> Result<(), String> {
         stdin
@@ -803,6 +928,12 @@ mod tests {
                 .expect("insert thread timestamp");
             path
         }
+
+        fn write_session_index(&self, content: &str) -> PathBuf {
+            let path = self.0.join(".codex/session_index.jsonl");
+            fs::write(&path, content).expect("write session index");
+            path
+        }
     }
 
     impl Drop for TemporaryHome {
@@ -892,6 +1023,119 @@ mod tests {
     }
 
     #[test]
+    fn selects_indexed_names_by_timestamp_then_line_order() {
+        let home = TemporaryHome::new("indexed-name-order");
+        let path = home.write_session_index(
+            &[
+                json!({"id":"dated","thread_name":"Newest","updated_at":"2030-01-02T10:00:00Z"}).to_string(),
+                json!({"id":"dated","thread_name":"Older but later line","updated_at":"2030-01-01T10:00:00Z"}).to_string(),
+                json!({"id":"tie","thread_name":"First","updated_at":"2030-01-01T10:00:00Z"}).to_string(),
+                json!({"id":"tie","thread_name":"Second","updated_at":"2030-01-01T10:00:00Z"}).to_string(),
+                json!({"id":"undated","thread_name":"First"}).to_string(),
+                json!({"id":"undated","thread_name":"Second","updated_at":"invalid"}).to_string(),
+                json!({"id":"mixed","thread_name":"Valid","updated_at":"2030-01-01T10:00:00Z"}).to_string(),
+                json!({"id":"mixed","thread_name":"Invalid later line","updated_at":"invalid"}).to_string(),
+            ]
+            .join("\n"),
+        );
+
+        let names = parse_thread_names(&path).expect("parse session index");
+
+        assert_eq!(names.get("dated").map(String::as_str), Some("Newest"));
+        assert_eq!(names.get("tie").map(String::as_str), Some("Second"));
+        assert_eq!(names.get("undated").map(String::as_str), Some("Second"));
+        assert_eq!(names.get("mixed").map(String::as_str), Some("Valid"));
+    }
+
+    #[test]
+    fn ignores_malformed_index_rows_and_empty_names() {
+        let home = TemporaryHome::new("invalid-index-rows");
+        let path = home.write_session_index(
+            &[
+                "not json".to_string(),
+                json!({"thread_name":"Missing id","updated_at":"2030-01-01T10:00:00Z"}).to_string(),
+                json!({"id":"missing-name","updated_at":"2030-01-01T10:00:00Z"}).to_string(),
+                json!({"id":"empty-name","thread_name":"   ","updated_at":"2030-01-01T10:00:00Z"}).to_string(),
+                json!({"id":"valid","thread_name":"  Visible title  ","updated_at":"2030-01-01T10:00:00Z"}).to_string(),
+            ]
+            .join("\n"),
+        );
+
+        let names = parse_thread_names(&path).expect("parse partial session index");
+
+        assert_eq!(names.len(), 1);
+        assert_eq!(
+            names.get("valid").map(String::as_str),
+            Some("Visible title")
+        );
+    }
+
+    #[test]
+    fn applies_the_documented_title_fallback_order() {
+        assert_eq!(
+            session_title(Some("Indexed"), "SQLite", "First message").as_raw(),
+            Some("Indexed")
+        );
+        assert_eq!(
+            session_title(Some("  "), "SQLite", "First message").as_raw(),
+            Some("SQLite")
+        );
+        assert_eq!(
+            session_title(None, "", "First message").as_raw(),
+            Some("First message")
+        );
+        assert!(matches!(
+            session_title(None, "", ""),
+            UiText::Message { key, .. } if key == "generated.codexConversation"
+        ));
+    }
+
+    #[test]
+    fn reuses_and_invalidates_the_thread_name_cache() {
+        let home = TemporaryHome::new("thread-name-cache");
+        let path = home.write_session_index(
+            &json!({"id":"thread","thread_name":"First","updated_at":"2030-01-01T10:00:00Z"})
+                .to_string(),
+        );
+
+        let first = cached_thread_names(&path);
+        let initial_fingerprint = {
+            let cache = THREAD_NAME_CACHE
+                .get()
+                .expect("initialized cache")
+                .lock()
+                .expect("available cache");
+            let cached = cache.get(&path).expect("cached index");
+            (cached.file_len, cached.file_modified_ns)
+        };
+        let second = cached_thread_names(&path);
+
+        assert_eq!(first, second);
+        assert_eq!(first.get("thread").map(String::as_str), Some("First"));
+        assert_eq!(file_fingerprint(&path), Some(initial_fingerprint));
+
+        home.write_session_index(
+            &json!({"id":"thread","thread_name":"A longer second title","updated_at":"2030-01-02T10:00:00Z"})
+                .to_string(),
+        );
+        let refreshed = cached_thread_names(&path);
+        let refreshed_fingerprint = file_fingerprint(&path).expect("updated fingerprint");
+
+        assert_eq!(
+            refreshed.get("thread").map(String::as_str),
+            Some("A longer second title")
+        );
+        assert_ne!(refreshed_fingerprint, initial_fingerprint);
+    }
+
+    #[test]
+    fn missing_session_index_is_an_empty_optional_source() {
+        let home = TemporaryHome::new("missing-session-index");
+
+        assert!(cached_thread_names(&home.path().join(".codex/session_index.jsonl")).is_empty());
+    }
+
+    #[test]
     fn incomplete_quota_exchange_reports_the_missing_response() {
         let account = Some(json!({"account": {"planType": "pro"}}));
 
@@ -964,6 +1208,27 @@ mod tests {
         assert!(
             crate::utils::now_ms() - latest.updated_at_ms < 24 * 60 * 60 * 1_000,
             "la tâche Codex la plus récente devrait dater de moins de 24 h"
+        );
+    }
+
+    #[test]
+    #[ignore = "dépend des données Codex installées sur la machine"]
+    fn reads_local_codex_renames() {
+        let sessions = load_sessions().expect("local Codex sessions");
+        let title = |id: &str| {
+            sessions
+                .iter()
+                .find(|session| session.id == format!("codex:{id}"))
+                .and_then(|session| session.title.as_raw())
+        };
+
+        assert_eq!(
+            title("019f80b3-9d60-7311-9c00-79950b18c590"),
+            Some("Agent Deck : debug")
+        );
+        assert_eq!(
+            title("019f8528-0828-7181-8283-693fdbb715c7"),
+            Some("Évaluer la publication du repo")
         );
     }
 }
