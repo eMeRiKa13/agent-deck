@@ -1175,29 +1175,33 @@ input:focus-visible {
   --panel-content-gutter: 22px;
   --panel-surface-gutter: 10px;
   --panel-surface-inset: 11px;
-  --background: #f7f2ea;
-  --surface: rgb(255 255 255 / 68%);
-  --surface-elevated: #fffaf4;
-  --surface-subtle: rgb(29 26 32 / 5%);
-  --sidebar: #eee7dd;
-  --foreground: #1d1a20;
-  --muted-foreground: #6f6872;
-  --faint-foreground: #928a95;
-  --border: rgb(29 26 32 / 10%);
-  --border-strong: rgb(29 26 32 / 18%);
-  --hover: rgb(76 149 108 / 9%);
-  --selected: rgb(76 149 108 / 14%);
-  --accent: #d87d08;
+  --background: #f8f4ee;
+  --surface: rgb(255 252 245 / 78%);
+  --surface-elevated: #fffcf6;
+  --surface-subtle: rgb(63 42 24 / 5%);
+  --sidebar: #f1ebe1;
+  --foreground: #241f26;
+  --muted-foreground: #6d6572;
+  --faint-foreground: #958d99;
+  --border: rgb(63 42 24 / 9%);
+  --border-strong: rgb(63 42 24 / 17%);
+  --hover: rgb(67 133 93 / 9%);
+  --selected: rgb(67 133 93 / 14%);
+  --accent: #c76d08;
   --accent-foreground: #fff;
-  --green: #4c956c;
-  --green-soft: rgb(76 149 108 / 13%);
-  --amber: #d87d08;
-  --amber-soft: rgb(249 157 33 / 14%);
-  --red: #c95757;
-  --red-soft: rgb(201 87 87 / 13%);
+  --green: #43855d;
+  --green-soft: rgb(67 133 93 / 13%);
+  --amber: #c76d08;
+  --amber-soft: rgb(216 125 8 / 13%);
+  --red: #bf4d4d;
+  --red-soft: rgb(191 77 77 / 12%);
   --blue: #386f50;
-  --shadow: 0 18px 45px rgb(29 26 32 / 7%);
-  --orange: #d87d08;
+  --shadow:
+    0 1px 2px rgb(63 42 24 / 5%),
+    0 20px 44px rgb(63 42 24 / 8%);
+  --orange: #c76d08;
+  --glow-warm: color-mix(in oklab, var(--orange) 6%, transparent);
+  --glow-cool: color-mix(in oklab, var(--green) 7%, transparent);
 }
 
 .dark {
@@ -1224,6 +1228,8 @@ input:focus-visible {
   --blue: #68b188;
   --shadow: 0 22px 55px rgb(0 0 0 / 23%);
   --orange: #f99d21;
+  --glow-warm: color-mix(in oklab, var(--orange) 10%, transparent);
+  --glow-cool: color-mix(in oklab, var(--green) 12%, transparent);
 }
 
 body {
@@ -1234,16 +1240,8 @@ body {
 .dashboard-shell {
   min-width: 0;
   background:
-    radial-gradient(
-      circle at 68% -30%,
-      color-mix(in oklab, var(--orange) 10%, transparent),
-      transparent 42%
-    ),
-    radial-gradient(
-      circle at 8% 115%,
-      color-mix(in oklab, var(--green) 12%, transparent),
-      transparent 36%
-    ),
+    radial-gradient(circle at 68% -30%, var(--glow-warm), transparent 42%),
+    radial-gradient(circle at 8% 115%, var(--glow-cool), transparent 36%),
     var(--background);
 }
 
