@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./agent-deck-logo.png" alt="Agent Deck" width="100%">
+</p>
+
 # Agent Deck
 
 Agent Deck is a read-only macOS dashboard that brings your Codex, Claude, and Cursor activity into one place.
