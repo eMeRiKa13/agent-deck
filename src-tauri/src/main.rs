@@ -3,6 +3,7 @@
 mod domain;
 mod providers;
 mod utils;
+mod window_state;
 
 use domain::DashboardSnapshot;
 use tauri_plugin_opener::OpenerExt;
@@ -44,14 +45,26 @@ fn open_external_link(
 }
 
 fn main() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(window_state::plugin())
+        .setup(|app| {
+            window_state::restore_main_window(app.handle());
+            Ok(())
+        })
+        .on_window_event(window_state::handle_window_event)
         .invoke_handler(tauri::generate_handler![
             get_dashboard_snapshot,
             open_external_link
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run Agent Deck");
+        .build(tauri::generate_context!())
+        .expect("failed to build Agent Deck");
+
+    app.run(|app_handle, event| {
+        if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+            window_state::save_main_monitor(app_handle);
+        }
+    });
 }
 
 #[cfg(test)]
