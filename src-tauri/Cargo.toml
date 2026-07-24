@@ -18,10 +18,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
-tauri-plugin-window-state = "2"
 thiserror = "2"
-tokio = { version = "1", features = ["io-util", "macros", "process", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "process", "sync", "time"] }
 walkdir = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSScreen", "NSWindow"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSGeometry"] }
 
 # Keep local builds debuggable without retaining full symbols for the large
 # third-party Tauri dependency graph. Full symbols remain available by

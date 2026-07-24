@@ -47,7 +47,6 @@ fn open_external_link(
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(window_state::plugin())
         .setup(|app| {
             window_state::restore_main_window(app.handle());
             Ok(())
@@ -61,8 +60,11 @@ fn main() {
         .expect("failed to build Agent Deck");
 
     app.run(|app_handle, event| {
-        if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
-            window_state::save_main_monitor(app_handle);
+        if matches!(
+            event,
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+        ) {
+            window_state::save_main_window(app_handle);
         }
     });
 }
