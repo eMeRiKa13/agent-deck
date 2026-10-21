@@ -719,6 +719,9 @@ async fn load_quota() -> Result<ProviderQuota, String> {
         while let Some(line) = lines.next_line().await.map_err(|error| error.to_string())? {
             let value: Value = serde_json::from_str(&line).map_err(|error| error.to_string())?;
             if value["id"] == 0 && !initialized {
+                if value.get("error").is_some() {
+                    return Err("Initialisation codex app-server refusée".to_string());
+                }
                 initialized = true;
                 send(&mut stdin, json!({"method": "initialized", "params": {}})).await?;
                 send(
@@ -782,15 +785,28 @@ fn find_codex_binary() -> PathBuf {
         .map(PathBuf::from)
         .filter(|path| path.exists())
         .or_else(|| {
-            [
-                "/Applications/ChatGPT.app/Contents/Resources/codex",
-                "/Applications/Codex.app/Contents/Resources/codex",
-            ]
-            .into_iter()
-            .map(PathBuf::from)
-            .find(|path| path.exists())
+            let mut roots = vec![PathBuf::from("/Applications")];
+            if let Ok(home) = home_dir() {
+                roots.push(home.join("Applications"));
+            }
+            roots.iter().find_map(|root| bundled_codex_binary(root))
         })
         .unwrap_or_else(|| PathBuf::from("codex"))
+}
+
+// Prefer the current self-contained bundle over a PATH-dependent CLI installation.
+fn bundled_codex_binary(applications: &Path) -> Option<PathBuf> {
+    ["ChatGPT.app", "Codex.app"].into_iter().find_map(|app| {
+        let resources = applications.join(app).join("Contents/Resources");
+        [
+            "codex-cli/bin/codex",
+            "codex-cli/CodexCLI.app/Contents/MacOS/codex",
+            "codex",
+        ]
+        .into_iter()
+        .map(|relative| resources.join(relative))
+        .find(|path| path.is_file())
+    })
 }
 
 // Validate the private RPC response before translating it into the stable dashboard model.
@@ -802,6 +818,12 @@ fn parse_quota(account: &Value, response: &Value) -> Result<ProviderQuota, Strin
     let snapshot = response
         .get("rateLimits")
         .filter(|value| value.is_object())
+        .or_else(|| {
+            response
+                .get("rateLimitsByLimitId")?
+                .get("codex")
+                .filter(|value| value.is_object())
+        })
         .ok_or_else(|| "Réponse quotas Codex incomplète".to_string())?;
     let source_windows = ["primary", "secondary"]
         .into_iter()
@@ -998,6 +1020,23 @@ mod tests {
             &quota.windows[1].label,
             UiText::Message { key, .. } if key == "quota.global"
         ));
+    }
+
+    #[test]
+    fn reads_the_codex_bucket_when_the_legacy_rate_limit_field_is_missing() {
+        let quota = parse_quota(
+            &json!({"account":{"planType":"plus"}}),
+            &json!({
+                "rateLimits":null,
+                "rateLimitsByLimitId":{
+                    "codex":{"primary":{"usedPercent":54,"windowDurationMins":10080}},
+                    "other":{"primary":{"usedPercent":99}}
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(quota.windows.len(), 1);
+        assert_eq!(quota.windows[0].used_percent, 54);
     }
 
     #[test]
@@ -1229,6 +1268,38 @@ mod tests {
         assert_eq!(
             title("019f8528-0828-7181-8283-693fdbb715c7"),
             Some("Évaluer la publication du repo")
+        );
+    }
+    #[test]
+    fn discovers_current_and_legacy_desktop_bundles() {
+        let root = std::env::temp_dir().join(format!(
+            "agent-deck-codex-bundle-{}-{}",
+            std::process::id(),
+            crate::utils::now_ms()
+        ));
+        let resources = root.join("ChatGPT.app/Contents/Resources");
+        let current = resources.join("codex-cli/bin/codex");
+        std::fs::create_dir_all(current.parent().unwrap()).unwrap();
+        let legacy = resources.join("codex");
+        std::fs::write(&legacy, "test binary").unwrap();
+        assert_eq!(bundled_codex_binary(&root), Some(legacy));
+        std::fs::write(&current, "test binary").unwrap();
+        assert_eq!(bundled_codex_binary(&root), Some(current));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requiert la session Codex et son accès réseau authentifié"]
+    async fn reads_live_account_quota() {
+        let quota = load_quota().await.expect("quota Codex actuel");
+        assert!(!quota.windows.is_empty());
+        println!(
+            "Codex live usage: {:?}",
+            quota
+                .windows
+                .iter()
+                .map(|window| (&window.id, window.used_percent))
+                .collect::<Vec<_>>()
         );
     }
 }
