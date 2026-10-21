@@ -45,7 +45,7 @@ const cards = computed(() => props.quotas.map((quota) => {
 <template>
   <aside class="usage-panel" :aria-label="t('usage.aria')">
     <div class="panel-heading panel-heading--usage">
-      <div><p class="panel-heading__eyebrow">{{ t('usage.eyebrow') }}</p><h2>{{ t('usage.title') }}</h2></div>
+      <h2>{{ t('usage.title') }}</h2>
       <div class="usage-panel__unit"><span>{{ t('usage.percentUsed') }}</span><GaugeIcon :size="18" /></div>
     </div>
     <div class="quota-list">

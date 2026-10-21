@@ -17,6 +17,13 @@ async function mountUsage(locale: 'fr' | 'en' = 'fr') {
 }
 
 describe('usage priorities and countdowns', () => {
+  it.each(['fr', 'en'] as const)('shows only the usage title in the %s heading', async (locale) => {
+    const wrapper = await mountUsage(locale)
+    const heading = wrapper.get('.panel-heading--usage')
+    expect(heading.get('h2').text()).toBe(locale === 'fr' ? 'Utilisation' : 'Usage')
+    expect(heading.find('.panel-heading__eyebrow').exists()).toBe(false)
+  })
+
   it('keeps main limits visible and puts model quotas and credits in read-only disclosures', async () => {
     const wrapper = await mountUsage()
     const codex = wrapper.get('[data-provider="codex"]')

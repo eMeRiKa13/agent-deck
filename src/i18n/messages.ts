@@ -130,7 +130,6 @@ const fr = {
   },
   usage: {
     aria: 'Quotas d’utilisation',
-    eyebrow: 'Abonnements',
     title: 'Utilisation',
     progress: '{provider} — {label}',
     used: 'utilisés',
@@ -405,7 +404,6 @@ const en: MessageShape<typeof fr> = {
   },
   usage: {
     aria: 'Usage quotas',
-    eyebrow: 'Subscriptions',
     title: 'Usage',
     progress: '{provider} — {label}',
     used: 'used',
