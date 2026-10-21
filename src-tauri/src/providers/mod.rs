@@ -166,6 +166,7 @@ mod tests {
             account: UiText::from("codex@example.com"),
             windows: Vec::new(),
             cost: None,
+            reset_offers: Vec::new(),
         }
     }
 

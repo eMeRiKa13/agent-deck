@@ -2,6 +2,8 @@ import type { ComposerTranslation } from 'vue-i18n'
 import type { SupportedLocale } from '@/i18n'
 import type { UiText, UsageCost } from '@/domain/dashboard'
 
+type FormatTranslation = (key: string, params?: Record<string, string | number>) => string
+
 /** Map an application locale to the regional tag used by Intl formatters. */
 export function localeTag(locale: SupportedLocale) {
   return locale === 'fr' ? 'fr-FR' : 'en-US'
@@ -70,6 +72,37 @@ export function formatResetTime(timestampMs: number, locale: SupportedLocale, t:
     minute: '2-digit',
   }).format(timestampMs)
   return t('time.resetAt', { date })
+}
+
+/** Format a live countdown without claiming a reset already happened. */
+export function formatResetCountdown(timestampMs: number, nowMs: number, t: FormatTranslation): string {
+  if (timestampMs <= nowMs) return t('time.resetPending')
+  const minutes = Math.floor((timestampMs - nowMs) / 60_000)
+  const duration = minutes < 1 ? t('time.lessThanMinute')
+    : minutes < 60 ? t('time.minutes', { count: minutes })
+      : minutes < 1_440 ? t('time.hoursMinutes', {
+        hours: Math.floor(minutes / 60), minutes: String(minutes % 60).padStart(2, '0'),
+      }) : t('time.daysHours', { days: Math.floor(minutes / 1_440), hours: Math.floor((minutes % 1_440) / 60) })
+  return t('time.resetIn', { duration })
+}
+
+/** Use local calendar days for offer expirations, including across daylight-saving changes. */
+export function formatOfferExpiry(timestampMs: number, nowMs: number, locale: SupportedLocale, t: FormatTranslation): string {
+  const expiry = new Date(timestampMs)
+  const today = new Date(nowMs)
+  const tomorrow = new Date(nowMs)
+  tomorrow.setDate(tomorrow.getDate() + 1)
+  const sameDay = (a: Date, b: Date) => a.getFullYear() === b.getFullYear()
+    && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
+  if (sameDay(expiry, today)) return t('usage.expiresToday')
+  if (sameDay(expiry, tomorrow)) return t('usage.expiresTomorrow')
+  return t('usage.expiresOn', { date: new Intl.DateTimeFormat(localeTag(locale), { day: 'numeric', month: 'short' }).format(expiry) })
+}
+
+export function formatOfferExpiryTime(timestampMs: number, locale: SupportedLocale, t: FormatTranslation): string {
+  return t('usage.expiresAt', { date: new Intl.DateTimeFormat(localeTag(locale), {
+    day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  }).format(timestampMs) })
 }
 
 /** Render every supported usage-cost variant into localized display text. */

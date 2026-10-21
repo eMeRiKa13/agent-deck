@@ -17,8 +17,8 @@ mod desktop;
 use crate::{
     domain::{
         ActivityGroup, ActivityItem, ActivityKind, ActivityStatus, AgentSession, ProviderId,
-        ProviderQuota, ProviderSessionDetails, ProviderSnapshot, QuotaWindow, SessionMetrics,
-        SessionStatus, TokenUsage, TokenUsageQuality, UiText, UsageCost,
+        ProviderQuota, ProviderSessionDetails, ProviderSnapshot, QuotaWindow, ResetOffer,
+        SessionMetrics, SessionStatus, TokenUsage, TokenUsageQuality, UiText, UsageCost,
     },
     providers::partial_snapshot,
     utils::{
@@ -726,7 +726,7 @@ async fn load_oauth_quota(credentials: Credentials) -> Result<ProviderQuota, Str
         .build()
         .map_err(|error| error.to_string())?;
     let response = client
-        .get("https://api.anthropic.com/api/oauth/usage")
+        .get("https://api.anthropic.com/api/oauth/usage?cedar_ember=1")
         .bearer_auth(&credentials.access_token)
         .header("anthropic-beta", "oauth-2025-04-20")
         .header("accept", "application/json")
@@ -803,7 +803,7 @@ fn parse_quota(value: &Value, plan: String) -> Result<ProviderQuota, String> {
         );
     } else {
         for (id, label, key) in [
-            ("claude-session", "quota.fiveHours", "five_hour"),
+            ("claude-session", "quota.session", "five_hour"),
             ("claude-week", "quota.weekly", "seven_day"),
             ("claude-sonnet", "quota.sonnetWeekly", "seven_day_sonnet"),
             ("claude-opus", "quota.opusWeekly", "seven_day_opus"),
@@ -854,7 +854,48 @@ fn parse_quota(value: &Value, plan: String) -> Result<ProviderQuota, String> {
         account: UiText::message("generated.claudeAccount"),
         windows,
         cost,
+        reset_offers: parse_reset_offers(value, crate::utils::now_ms()),
     })
+}
+
+fn parse_reset_offers(value: &Value, now: i64) -> Vec<ResetOffer> {
+    let reset = &value["cedar_ember"];
+    if reset["eligible"] != true {
+        return Vec::new();
+    }
+    reset["grants"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|grant| {
+            if grant["type"] != "full"
+                || grant["paused"] == true
+                || !grant["unavailable_reason"].is_null()
+            {
+                return None;
+            }
+            let count = grant["resets_left"]
+                .as_u64()
+                .and_then(|count| u32::try_from(count).ok())
+                .filter(|count| *count > 0)?;
+            if let Some(starts_at) = grant["starts_at"].as_str() {
+                if reset_at_ms_from_iso(Some(starts_at)).is_none_or(|starts| starts > now) {
+                    return None;
+                }
+            }
+            let expires_at_ms = match grant.get("ends_at") {
+                Some(Value::String(value)) => {
+                    Some(reset_at_ms_from_iso(Some(value)).filter(|expiry| *expiry > now)?)
+                }
+                Some(Value::Null) | None => None,
+                _ => return None,
+            };
+            Some(ResetOffer {
+                count,
+                expires_at_ms,
+            })
+        })
+        .collect()
 }
 
 // Parse siblings independently so one malformed optional window cannot hide valid usage.
@@ -870,7 +911,7 @@ fn parse_current_limit(limit: &Value, index: usize) -> Option<QuotaWindow> {
     let (id, label) = match limit["kind"].as_str()? {
         "session" => (
             "claude-session".to_string(),
-            UiText::message("quota.fiveHours"),
+            UiText::message("quota.session"),
         ),
         "weekly_all" => ("claude-week".to_string(), UiText::message("quota.weekly")),
         "weekly_scoped" => {
@@ -998,6 +1039,26 @@ mod tests {
     }
 
     #[test]
+    fn projects_real_full_reset_grants_without_redemption_identifiers() {
+        let value = json!({"cedar_ember":{"eligible":true,"grants":[
+            {"id":"private-redemption-id","type":"full","resets_left":1,"ends_at":"2030-01-01T00:00:00Z","paused":false,"unavailable_reason":null},
+            {"type":"full","resets_left":1,"ends_at":"2020-01-01T00:00:00Z"},
+            {"type":"full","resets_left":0},
+            {"type":"partial","resets_left":1},
+            {"type":"full","resets_left":1,"paused":true},
+            {"type":"full","resets_left":1,"ends_at":"invalid"}
+        ]}});
+        let offers = parse_reset_offers(&value, 1_800_000_000_000);
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].count, 1);
+        assert!(offers[0].expires_at_ms.is_some());
+        assert!(!serde_json::to_string(&offers)
+            .unwrap()
+            .contains("private-redemption-id"));
+        assert!(parse_reset_offers(&json!({"cedar_ember":null}), 1_800_000_000_000).is_empty());
+    }
+
+    #[test]
     fn skips_invalid_candidates_until_limit_is_reached() {
         let root = std::env::temp_dir().join(format!(
             "agent-deck-claude-candidates-{}-{}",
@@ -1119,5 +1180,6 @@ mod tests {
                 .map(|window| (&window.id, window.used_percent))
                 .collect::<Vec<_>>()
         );
+        println!("Claude reset offers: {:?}", quota.reset_offers);
     }
 }

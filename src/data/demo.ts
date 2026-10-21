@@ -111,22 +111,26 @@ function createSnapshot(): DashboardSnapshot {
     quotas: [
       {
         provider: 'codex', plan: 'Pro', account: ui('generated.primaryAccount'),
-        windows: [{ id: 'codex-global', label: ui('quota.global'), usedPercent: 39, resetAtMs: now + 4 * day }],
-        cost: { kind: 'tokensToday', value: 183 },
+        windows: [{ id: 'codex-global', label: ui('quota.weekly'), usedPercent: 39, resetAtMs: now + 4 * day }],
+        cost: { kind: 'credits', value: 1313.06 },
+        resetOffers: [{ count: 1, expiresAtMs: now + 20 * hour }],
       },
       {
         provider: 'claude', plan: 'Max 20×', account: ui('generated.primaryAccount'),
         windows: [
-          { id: 'claude-session', label: ui('quota.fiveHours'), usedPercent: 74, resetAtMs: now + 48 * minute },
+          { id: 'claude-session', label: ui('quota.session'), usedPercent: 74, resetAtMs: now + 48 * minute },
           { id: 'claude-week', label: ui('quota.weekly'), usedPercent: 46, resetAtMs: now + 5 * day },
+          { id: 'claude-scoped-2', label: ui('quota.modelWeekly', { model: 'Fable' }), usedPercent: 12, resetAtMs: now + 5 * day },
         ],
         cost: { kind: 'tokensToday', value: 256 },
+        resetOffers: [{ count: 1, expiresAtMs: now + 20 * hour }],
       },
       {
         provider: 'cursor', plan: 'Pro', account: ui('generated.personalWorkspace'),
         windows: [
           { id: 'cursor-plan', label: ui('quota.included'), usedPercent: 57, resetAtMs: now + 12 * day },
-          { id: 'cursor-auto', label: ui('quota.autoModel'), usedPercent: 31, resetText: ui('quota.billingCycle') },
+          { id: 'cursor-auto', label: ui('quota.autoModel'), usedPercent: 31, resetAtMs: now + 12 * day },
+          { id: 'cursor-api', label: ui('quota.apiModels'), usedPercent: 57, resetAtMs: now + 12 * day },
         ],
         cost: { kind: 'consumption', value: 8.42 },
       },

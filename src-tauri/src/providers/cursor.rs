@@ -648,7 +648,7 @@ fn parse_quota(summary: &Value, account: &Value) -> Result<ProviderQuota, String
             id: "cursor-auto".to_string(),
             label: UiText::message("quota.autoModel"),
             used_percent: clamp_percent(plan["autoPercentUsed"].as_f64().unwrap_or_default()),
-            reset_at_ms: None,
+            reset_at_ms,
             reset_text: Some(UiText::message("quota.billingCycle")),
         });
     }
@@ -657,7 +657,7 @@ fn parse_quota(summary: &Value, account: &Value) -> Result<ProviderQuota, String
             id: "cursor-api".to_string(),
             label: UiText::message("quota.apiModels"),
             used_percent: clamp_percent(plan["apiPercentUsed"].as_f64().unwrap_or_default()),
-            reset_at_ms: None,
+            reset_at_ms,
             reset_text: Some(UiText::message("quota.billingCycle")),
         });
     }
@@ -684,6 +684,7 @@ fn parse_quota(summary: &Value, account: &Value) -> Result<ProviderQuota, String
             .unwrap_or_else(|| UiText::message("generated.cursorAccount")),
         windows,
         cost,
+        reset_offers: Vec::new(),
     })
 }
 

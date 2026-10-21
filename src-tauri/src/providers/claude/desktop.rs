@@ -251,7 +251,7 @@ async fn fetch_quota(session: DesktopSession) -> Result<ProviderQuota, String> {
         .unwrap_or_else(|| "Claude App".to_string());
     let value = get_json(
         &client,
-        &format!("https://claude.ai/api/organizations/{id}/usage"),
+        &format!("https://claude.ai/api/organizations/{id}/usage?cedar_ember=1"),
     )
     .await?;
     parse_quota(&value, plan)

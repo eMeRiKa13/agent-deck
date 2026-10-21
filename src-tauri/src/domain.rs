@@ -295,12 +295,21 @@ pub enum UsageCost {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ResetOffer {
+    pub count: u32,
+    pub expires_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProviderQuota {
     pub provider: ProviderId,
     pub plan: String,
     pub account: UiText,
     pub windows: Vec<QuotaWindow>,
     pub cost: Option<UsageCost>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reset_offers: Vec<ResetOffer>,
 }
 
 #[derive(Debug, Serialize)]
@@ -416,6 +425,7 @@ mod tests {
                     included: 12.5,
                     on_demand: 1.25,
                 }),
+                reset_offers: Vec::new(),
             }],
             refreshed_at_ms: 2_500,
         };

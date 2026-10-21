@@ -82,6 +82,17 @@ because newer Desktop versions can record zero placeholders there. Both current
 `codex-cli/` bundles and older Codex binary locations are supported, without
 requiring a separate CLI installation.
 
+Usage percentages consistently mean **used**, with a live countdown until each
+provider-reported reset. Exact dates, credits, costs, and model-specific limits
+are available in expandable details. Codex windows are named from their actual
+duration; Cursor's monthly model allowances share the reported billing-cycle end.
+
+Free full-reset offers are shown only when explicitly returned by the provider:
+Codex's `rateLimitResetCredits`, or Claude's `cedar_ember.grants` from the usage
+request with `?cedar_ember=1`. Only counts and expiration dates reach Vue; grant
+identifiers are not exposed. Expired offers are hidden, and Agent Deck never
+calls a redemption endpoint or resets a quota.
+
 ## Run Agent Deck from source
 
 Agent Deck does not provide an official downloadable binary. Build and run it

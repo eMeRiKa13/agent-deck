@@ -20,8 +20,9 @@ use tokio::{
 use crate::{
     domain::{
         ActivityGroup, ActivityItem, ActivityKind, ActivityStatus, AgentSession, ProviderId,
-        ProviderQuota, ProviderSessionDetails, ProviderSnapshot, QuotaWindow, SessionMetrics,
-        SessionStatus, SubagentSummary, TokenUsage, TokenUsageQuality, UiText, UsageCost,
+        ProviderQuota, ProviderSessionDetails, ProviderSnapshot, QuotaWindow, ResetOffer,
+        SessionMetrics, SessionStatus, SubagentSummary, TokenUsage, TokenUsageQuality, UiText,
+        UsageCost,
     },
     providers::partial_snapshot,
     utils::{
@@ -871,7 +872,57 @@ fn parse_quota(account: &Value, response: &Value) -> Result<ProviderQuota, Strin
             .unwrap_or_else(|| UiText::message("generated.codexAccount")),
         windows,
         cost: credits,
+        reset_offers: parse_reset_offers(response, crate::utils::now_ms()),
     })
+}
+
+// Only project reset counts and expiry dates; redemption identifiers stay in the provider.
+fn parse_reset_offers(response: &Value, now: i64) -> Vec<ResetOffer> {
+    let summary = &response["rateLimitResetCredits"];
+    let Some(count) = summary["availableCount"]
+        .as_u64()
+        .and_then(|count| u32::try_from(count).ok())
+    else {
+        return Vec::new();
+    };
+    if count == 0 {
+        return Vec::new();
+    }
+    let Some(credits) = summary["credits"].as_array() else {
+        return vec![ResetOffer {
+            count,
+            expires_at_ms: None,
+        }];
+    };
+    let mut offers = credits
+        .iter()
+        .filter_map(|credit| {
+            if credit["status"] != "available" || credit["resetType"] != "codexRateLimits" {
+                return None;
+            }
+            let expires_at_ms = match credit.get("expiresAt") {
+                Some(Value::Number(value)) => {
+                    Some(reset_at_ms_from_epoch(value.as_i64()).filter(|expiry| *expiry > now)?)
+                }
+                Some(Value::Null) | None => None,
+                _ => return None,
+            };
+            Some(ResetOffer {
+                count: 1,
+                expires_at_ms,
+            })
+        })
+        .take(count as usize)
+        .collect::<Vec<_>>();
+    // The API may provide a count without the complete detail list.
+    let unlisted = count.saturating_sub(credits.len().try_into().unwrap_or(u32::MAX));
+    if unlisted > 0 {
+        offers.push(ResetOffer {
+            count: unlisted,
+            expires_at_ms: None,
+        });
+    }
+    offers
 }
 
 // Preserve stable window IDs while supporting both current and legacy rate-limit payloads.
@@ -882,6 +933,7 @@ fn codex_window_identity(
 ) -> (&'static str, &'static str) {
     match duration_minutes {
         Some(300) => ("codex-session", "quota.fiveHours"),
+        Some(10_080) => ("codex-global", "quota.weekly"),
         Some(minutes) if minutes >= 24 * 60 => ("codex-global", "quota.global"),
         _ if has_single_window => ("codex-global", "quota.global"),
         _ if key == "primary" => ("codex-session", "quota.session"),
@@ -983,7 +1035,7 @@ mod tests {
         assert_eq!(quota.windows[0].id, "codex-global");
         assert!(matches!(
             &quota.windows[0].label,
-            UiText::Message { key, .. } if key == "quota.global"
+            UiText::Message { key, .. } if key == "quota.weekly"
         ));
         assert_eq!(quota.windows[0].used_percent, 39);
         assert_eq!(quota.plan, "Pro");
@@ -1018,7 +1070,7 @@ mod tests {
         ));
         assert!(matches!(
             &quota.windows[1].label,
-            UiText::Message { key, .. } if key == "quota.global"
+            UiText::Message { key, .. } if key == "quota.weekly"
         ));
     }
 
@@ -1037,6 +1089,30 @@ mod tests {
         .unwrap();
         assert_eq!(quota.windows.len(), 1);
         assert_eq!(quota.windows[0].used_percent, 54);
+    }
+
+    #[test]
+    fn exposes_only_available_unexpired_reset_credits() {
+        let offers = parse_reset_offers(
+            &json!({"rateLimitResetCredits":{
+                "availableCount":3,"credits":[
+                    {"status":"available","resetType":"codexRateLimits","expiresAt":2000},
+                    {"status":"available","resetType":"codexRateLimits","expiresAt":999},
+                    {"status":"redeemed","resetType":"codexRateLimits","expiresAt":2000}
+                ]
+            }}),
+            1_000_000,
+        );
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].count, 1);
+        assert_eq!(offers[0].expires_at_ms, Some(2_000_000));
+        let count_only = parse_reset_offers(
+            &json!({"rateLimitResetCredits":{"availableCount":2,"credits":null}}),
+            1_000_000,
+        );
+        assert_eq!(count_only[0].count, 2);
+        assert!(count_only[0].expires_at_ms.is_none());
+        assert!(parse_reset_offers(&json!({}), 1_000_000).is_empty());
     }
 
     #[test]
@@ -1301,5 +1377,6 @@ mod tests {
                 .map(|window| (&window.id, window.used_percent))
                 .collect::<Vec<_>>()
         );
+        println!("Codex reset offers: {:?}", quota.reset_offers);
     }
 }

@@ -129,12 +129,18 @@ export type UsageCost =
   | { kind: 'tokensToday'; value: number }
   | { kind: 'consumption'; value: number }
 
+export interface ResetOffer {
+  count: number
+  expiresAtMs?: number | null
+}
+
 export interface ProviderQuota {
   provider: ProviderId
   plan: string
   account: UiText
   windows: QuotaWindow[]
   cost?: UsageCost | null
+  resetOffers?: ResetOffer[]
 }
 
 export interface DashboardSnapshot {
