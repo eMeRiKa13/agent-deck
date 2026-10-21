@@ -41,7 +41,7 @@ Agent Deck has no account system and no dedicated cloud service. Its Rust adapte
 | Provider | Conversations | Usage |
 | --- | --- | --- |
 | Codex | `~/.codex/state_5.sqlite` and JSONL rollouts | The `codex app-server` bundled with the Codex app |
-| Claude | `~/.claude/projects` and Claude Desktop session metadata | Local usage history and the Anthropic OAuth usage endpoint when available |
+| Claude | `~/.claude/projects` and Claude Desktop session metadata | Live Claude Desktop usage using its signed-in session, with Anthropic OAuth as fallback |
 | Cursor | Cursor’s local `state.vscdb` database | Cursor’s usage summary using the existing local session |
 
 Local databases are opened in read-only mode. Conversation titles, summaries,
@@ -61,11 +61,26 @@ to retrieve account and quota information:
 | --- | --- | --- |
 | Codex | The local `codex app-server` process | Read the authenticated account and rate limits. The Codex process manages its own provider connection. |
 | Claude | `https://api.anthropic.com/api/oauth/usage` | Read OAuth usage windows when local credentials are available. |
+| Claude Desktop | `https://claude.ai/api/organizations` and `/api/organizations/{id}/usage` | Read the active Desktop organization's current limits using its existing session. |
 | Cursor | `https://cursor.com/api/usage-summary` and `https://cursor.com/api/auth/me` | Read plan usage and account metadata using the existing local session. |
 
 The About panel can open allow-listed GitHub, Enchanter, and Corsair pages after
 you select their links. The Vue frontend cannot initiate arbitrary external
 connections.
+
+On macOS, live Claude Desktop usage reads only the `sessionKey` and
+`lastActiveOrg` cookies from Claude's own cookie database, opened read-only.
+macOS may ask for access to the **Claude Safe Storage** Keychain item on the
+first refresh. Cookie decryption stays in Rust, and no credentials are saved by
+Agent Deck or exposed to Vue. The selected organization is checked against the
+authenticated session; multiple organizations without an active selection are
+reported as unavailable rather than guessed. Browser cookie stores are not used.
+
+Claude's current `limits[]` measurements take precedence over legacy usage
+fields. The Desktop `plan-usage-history.json` file is no longer used for quotas,
+because newer Desktop versions can record zero placeholders there. Both current
+`codex-cli/` bundles and older Codex binary locations are supported, without
+requiring a separate CLI installation.
 
 ## Run Agent Deck from source
 

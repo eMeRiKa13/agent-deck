@@ -11,6 +11,9 @@ use chrono::DateTime;
 use serde_json::{Map, Value};
 use walkdir::WalkDir;
 
+#[cfg(target_os = "macos")]
+mod desktop;
+
 use crate::{
     domain::{
         ActivityGroup, ActivityItem, ActivityKind, ActivityStatus, AgentSession, ProviderId,
@@ -696,19 +699,24 @@ struct Credentials {
     plan: String,
 }
 
-// Prefer authenticated OAuth usage and fall back to Claude Desktop's local measurement history.
+// Read live Desktop usage first; historical samples no longer track the current limits API.
 async fn load_quota() -> Result<ProviderQuota, String> {
-    match load_credentials().await {
-        Ok(credentials) => match load_oauth_quota(credentials).await {
-            Ok(quota) => Ok(quota),
-            Err(remote_error) => load_desktop_quota().map_err(|local_error| {
-                format!("{remote_error} · secours Claude Desktop : {local_error}")
-            }),
-        },
-        Err(credentials_error) => load_desktop_quota().map_err(|local_error| {
-            format!("{credentials_error} · secours Claude Desktop : {local_error}")
-        }),
-    }
+    #[cfg(target_os = "macos")]
+    let desktop_error = match desktop::load_quota().await {
+        Ok(quota) => return Ok(quota),
+        Err(error) => Some(error),
+    };
+    #[cfg(not(target_os = "macos"))]
+    let desktop_error: Option<String> = None;
+
+    let oauth = match load_credentials().await {
+        Ok(credentials) => load_oauth_quota(credentials).await,
+        Err(error) => Err(error),
+    };
+    oauth.map_err(|error| match desktop_error {
+        Some(desktop_error) => format!("{desktop_error} · secours OAuth : {error}"),
+        None => error,
+    })
 }
 
 // Fetch the private OAuth usage payload with a bounded request timeout.
@@ -731,52 +739,6 @@ async fn load_oauth_quota(credentials: Credentials) -> Result<ProviderQuota, Str
     }
     let value: Value = response.json().await.map_err(|error| error.to_string())?;
     parse_quota(&value, credentials.plan)
-}
-
-// Translate the newest Claude Desktop usage sample into the shared quota model.
-fn load_desktop_quota() -> Result<ProviderQuota, String> {
-    let path = home_dir()?.join("Library/Application Support/Claude/plan-usage-history.json");
-    let value: Value = serde_json::from_slice(
-        &std::fs::read(path).map_err(|error| format!("historique d’usage absent : {error}"))?,
-    )
-    .map_err(|error| format!("historique d’usage invalide : {error}"))?;
-    let sample = value["samples"]
-        .as_array()
-        .and_then(|samples| samples.last())
-        .ok_or("aucune mesure d’usage locale")?;
-    let usage = &sample["u"];
-    let mut windows = Vec::new();
-    if let Some(percent) = usage["fh"].as_f64() {
-        windows.push(QuotaWindow {
-            id: "claude-session-local".to_string(),
-            label: UiText::message("quota.fiveHours"),
-            used_percent: clamp_percent(percent),
-            reset_at_ms: None,
-            reset_text: Some(UiText::message("quota.resetHourNotStored")),
-        });
-    }
-    if let Some(percent) = usage["sd"].as_f64() {
-        windows.push(QuotaWindow {
-            id: "claude-week-local".to_string(),
-            label: UiText::message("quota.weekly"),
-            used_percent: clamp_percent(percent),
-            reset_at_ms: None,
-            reset_text: Some(UiText::message("quota.resetDayNotStored")),
-        });
-    }
-    if windows.is_empty() {
-        return Err("mesure d’usage locale vide".to_string());
-    }
-    let measured_at = sample["t"].as_i64().unwrap_or_default();
-    Ok(ProviderQuota {
-        provider: ProviderId::Claude,
-        plan: "Claude App".to_string(),
-        account: UiText::from("Claude Desktop"),
-        windows,
-        cost: (measured_at > 0).then_some(UsageCost::LocalMeasurement {
-            measured_at_ms: normalize_epoch_ms(measured_at),
-        }),
-    })
 }
 
 // Read OAuth credentials from Claude's local configuration without exposing the token to Vue.
@@ -827,64 +789,48 @@ fn parse_quota(value: &Value, plan: String) -> Result<ProviderQuota, String> {
         return Err("Réponse de quota Claude invalide".to_string());
     }
     let mut windows = Vec::new();
-    for (id, label, key) in [
-        ("claude-session", "quota.fiveHours", "five_hour"),
-        ("claude-week", "quota.weekly", "seven_day"),
-        ("claude-sonnet", "quota.sonnetWeekly", "seven_day_sonnet"),
-        ("claude-opus", "quota.opusWeekly", "seven_day_opus"),
-    ] {
-        let window = &value[key];
-        if window.is_object() {
-            let utilization = window["utilization"]
-                .as_f64()
-                .filter(|value| value.is_finite())
-                .ok_or_else(|| format!("Quota Claude {key} sans utilisation valide"))?;
-            let reset_at_ms = match window.get("resets_at") {
-                Some(Value::String(value)) => reset_at_ms_from_iso(Some(value))
-                    .ok_or_else(|| format!("Date de réinitialisation Claude {key} invalide"))
-                    .map(Some)?,
-                Some(Value::Null) | None => None,
-                Some(_) => return Err(format!("Date de réinitialisation Claude {key} invalide")),
-            };
-            windows.push(QuotaWindow {
-                id: id.to_string(),
-                label: UiText::message(label),
-                used_percent: clamp_percent(utilization),
-                reset_at_ms,
-                reset_text: Some(UiText::message("quota.resetUnknown")),
-            });
-        }
-    }
-    if let Some(limits) = value["limits"].as_array() {
-        for (index, limit) in limits
-            .iter()
-            .filter(|limit| limit["kind"] == "weekly_scoped")
-            .take(3)
-            .enumerate()
-        {
-            let percent = limit["percent"]
-                .as_f64()
-                .filter(|value| value.is_finite())
-                .ok_or("Quota Claude limité sans pourcentage valide")?;
-            let reset_at_ms = match limit.get("resets_at") {
-                Some(Value::String(value)) => reset_at_ms_from_iso(Some(value))
-                    .ok_or("Date de quota Claude limité invalide")
-                    .map(Some)?,
-                Some(Value::Null) | None => None,
-                Some(_) => return Err("Date de quota Claude limité invalide".to_string()),
-            };
-            let name = limit["scope"]["model"]["display_name"]
-                .as_str()
-                .unwrap_or("Model");
-            let mut params = Map::new();
-            params.insert("model".to_string(), Value::String(name.to_string()));
-            windows.push(QuotaWindow {
-                id: format!("claude-scoped-{index}"),
-                label: UiText::message_with("quota.modelWeekly", params),
-                used_percent: clamp_percent(percent),
-                reset_at_ms,
-                reset_text: Some(UiText::message("quota.resetUnknown")),
-            });
+    // An explicit limits array is authoritative, including an empty array.
+    // Never let legacy zero placeholders overwrite the current measurements.
+    if let Some(limits) = value.get("limits").filter(|limits| !limits.is_null()) {
+        let limits = limits
+            .as_array()
+            .ok_or("Format des limites Claude invalide")?;
+        windows.extend(
+            limits
+                .iter()
+                .enumerate()
+                .filter_map(|(index, limit)| parse_current_limit(limit, index)),
+        );
+    } else {
+        for (id, label, key) in [
+            ("claude-session", "quota.fiveHours", "five_hour"),
+            ("claude-week", "quota.weekly", "seven_day"),
+            ("claude-sonnet", "quota.sonnetWeekly", "seven_day_sonnet"),
+            ("claude-opus", "quota.opusWeekly", "seven_day_opus"),
+        ] {
+            let window = &value[key];
+            if window.is_object() {
+                let utilization = window["utilization"]
+                    .as_f64()
+                    .filter(|value| value.is_finite())
+                    .ok_or_else(|| format!("Quota Claude {key} sans utilisation valide"))?;
+                let reset_at_ms = match window.get("resets_at") {
+                    Some(Value::String(value)) => reset_at_ms_from_iso(Some(value))
+                        .ok_or_else(|| format!("Date de réinitialisation Claude {key} invalide"))
+                        .map(Some)?,
+                    Some(Value::Null) | None => None,
+                    Some(_) => {
+                        return Err(format!("Date de réinitialisation Claude {key} invalide"))
+                    }
+                };
+                windows.push(QuotaWindow {
+                    id: id.to_string(),
+                    label: UiText::message(label),
+                    used_percent: clamp_percent(utilization),
+                    reset_at_ms,
+                    reset_text: Some(UiText::message("quota.resetUnknown")),
+                });
+            }
         }
     }
     if windows.is_empty() {
@@ -908,6 +854,48 @@ fn parse_quota(value: &Value, plan: String) -> Result<ProviderQuota, String> {
         account: UiText::message("generated.claudeAccount"),
         windows,
         cost,
+    })
+}
+
+// Parse siblings independently so one malformed optional window cannot hide valid usage.
+fn parse_current_limit(limit: &Value, index: usize) -> Option<QuotaWindow> {
+    let percent = limit["percent"]
+        .as_f64()
+        .filter(|percent| percent.is_finite())?;
+    let reset_at_ms = match limit.get("resets_at") {
+        Some(Value::String(value)) => Some(reset_at_ms_from_iso(Some(value))?),
+        Some(Value::Null) | None => None,
+        Some(_) => return None,
+    };
+    let (id, label) = match limit["kind"].as_str()? {
+        "session" => (
+            "claude-session".to_string(),
+            UiText::message("quota.fiveHours"),
+        ),
+        "weekly_all" => ("claude-week".to_string(), UiText::message("quota.weekly")),
+        "weekly_scoped" => {
+            let name = limit["scope"]["model"]["display_name"]
+                .as_str()
+                .or_else(|| limit["scope"]["surface"]["display_name"].as_str())?
+                .trim();
+            if name.is_empty() {
+                return None;
+            }
+            let mut params = Map::new();
+            params.insert("model".to_string(), Value::String(name.to_string()));
+            (
+                format!("claude-scoped-{index}"),
+                UiText::message_with("quota.modelWeekly", params),
+            )
+        }
+        _ => return None,
+    };
+    Some(QuotaWindow {
+        id,
+        label,
+        used_percent: clamp_percent(percent),
+        reset_at_ms,
+        reset_text: Some(UiText::message("quota.resetUnknown")),
     })
 }
 
@@ -955,6 +943,58 @@ mod tests {
             "Pro".to_string(),
         )
         .is_err());
+    }
+
+    #[test]
+    fn current_limits_override_legacy_zero_placeholders() {
+        let quota = parse_quota(&json!({
+            "five_hour": {"utilization":0}, "seven_day":{"utilization":0},
+            "limits": [
+                {"kind":"session","percent":42.0,"resets_at":"2030-01-01T10:00:00Z"},
+                {"kind":"weekly_all","percent":19},
+                {"kind":"weekly_scoped","percent":76,"scope":{"model":{"display_name":"Fable"}}},
+                {"kind":"weekly_scoped","percent":8,"scope":{"surface":{"display_name":"Cowork"}}}
+            ]
+        }), "Claude App".into()).unwrap();
+        assert_eq!(
+            quota
+                .windows
+                .iter()
+                .map(|window| window.used_percent)
+                .collect::<Vec<_>>(),
+            vec![42, 19, 76, 8]
+        );
+        assert!(quota.windows[0].reset_at_ms.is_some());
+        assert_eq!(quota.windows[0].id, "claude-session");
+        assert_eq!(quota.windows[1].id, "claude-week");
+    }
+
+    #[test]
+    fn malformed_siblings_do_not_hide_real_limits_or_invent_zero_usage() {
+        let quota = parse_quota(
+            &json!({"limits":[
+                {"kind":"session","percent":"0"},
+                {"kind":"weekly_scoped","percent":true},
+                {"kind":"weekly_all","percent":37},
+                {"kind":"session","percent":8,"resets_at":"invalid"}
+            ]}),
+            "Pro".into(),
+        )
+        .unwrap();
+        assert_eq!(quota.windows.len(), 1);
+        assert_eq!(quota.windows[0].used_percent, 37);
+        assert!(parse_quota(
+            &json!({"limits":[],"five_hour":{"utilization":0}}),
+            "Pro".into()
+        )
+        .is_err());
+        assert!(parse_quota(&json!({"limits":[{"kind":"session"}]}), "Pro".into()).is_err());
+        let zero = parse_quota(
+            &json!({"limits":[{"kind":"session","percent":0}]}),
+            "Pro".into(),
+        )
+        .unwrap();
+        assert_eq!(zero.windows[0].used_percent, 0);
     }
 
     #[test]
@@ -1030,14 +1070,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_desktop_usage_history() {
-        let sample = serde_json::json!({"t": 2_000_000_000_000_i64, "u": {"fh": 31, "sd": 12}});
-        let usage = &sample["u"];
-        assert_eq!(clamp_percent(usage["fh"].as_f64().unwrap()), 31);
-        assert_eq!(clamp_percent(usage["sd"].as_f64().unwrap()), 12);
-    }
-
-    #[test]
     fn extracts_text_blocks() {
         let content =
             json!([{"type": "text", "text": "Bonjour"}, {"type": "tool_use", "name": "Read"}]);
@@ -1073,12 +1105,19 @@ mod tests {
         );
     }
 
-    #[test]
-    #[ignore = "dépend de l’historique d’usage de Claude Desktop"]
-    fn reads_local_desktop_quota() {
-        assert!(!load_desktop_quota()
-            .expect("quota Claude Desktop")
-            .windows
-            .is_empty());
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[ignore = "requiert la session Claude Desktop et son accès réseau authentifié"]
+    async fn reads_live_desktop_quota() {
+        let quota = desktop::load_quota().await.expect("quota Claude Desktop");
+        assert!(!quota.windows.is_empty());
+        println!(
+            "Claude live usage: {:?}",
+            quota
+                .windows
+                .iter()
+                .map(|window| (&window.id, window.used_percent))
+                .collect::<Vec<_>>()
+        );
     }
 }

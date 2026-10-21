@@ -23,9 +23,14 @@ tokio = { version = "1", features = ["io-util", "macros", "process", "sync", "ti
 walkdir = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+aes = "0.8"
+cbc = "0.1"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSScreen", "NSWindow"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSGeometry"] }
+pbkdf2 = "0.12"
+sha1 = "0.10"
+sha2 = "0.10"
 
 # Keep local builds debuggable without retaining full symbols for the large
 # third-party Tauri dependency graph. Full symbols remain available by

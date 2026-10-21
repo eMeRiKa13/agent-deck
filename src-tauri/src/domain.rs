@@ -275,10 +275,22 @@ pub struct QuotaWindow {
     rename_all_fields = "camelCase"
 )]
 pub enum UsageCost {
-    Credits { value: f64 },
-    ExtraUsage { value: f64, currency: String },
-    IncludedOnDemand { included: f64, on_demand: f64 },
-    LocalMeasurement { measured_at_ms: i64 },
+    Credits {
+        value: f64,
+    },
+    ExtraUsage {
+        value: f64,
+        currency: String,
+    },
+    IncludedOnDemand {
+        included: f64,
+        on_demand: f64,
+    },
+    // Retain the legacy wire representation for older dashboard consumers.
+    #[allow(dead_code)]
+    LocalMeasurement {
+        measured_at_ms: i64,
+    },
 }
 
 #[derive(Debug, Serialize)]
