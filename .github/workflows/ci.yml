@@ -15,13 +15,13 @@ concurrency:
 jobs:
   frontend:
     name: Frontend
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v5
         with:
           version: 10.33.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
@@ -34,11 +34,11 @@ jobs:
     name: Desktop
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v5
         with:
           version: 10.33.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
@@ -56,20 +56,19 @@ jobs:
 
   security:
     name: Security
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      checks: write
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v5
         with:
           version: 10.33.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
       - run: pnpm audit --audit-level high
-      - uses: rustsec/audit-check@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          working-directory: src-tauri
+          workspaces: src-tauri -> target
+      - run: cargo install cargo-audit --locked --version 0.22.2
+      - run: cargo audit --file src-tauri/Cargo.lock

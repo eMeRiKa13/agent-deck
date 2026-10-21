@@ -27,8 +27,14 @@
     "@tauri-apps/api": "^2.9.1",
     "@tauri-apps/plugin-opener": "^2.5.4",
     "@vueuse/core": "^14.3.0",
-    "vue": "^3.5.38",
+    "vue": "^3.5.44",
     "vue-i18n": "^11.4.7"
+  },
+  "pnpm": {
+    "overrides": {
+      "brace-expansion@>=2.0.0 <2.1.7": "2.1.7",
+      "source-map-js@<1.2.2": "1.2.2"
+    }
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.1",
@@ -39,8 +45,8 @@
     "happy-dom": "^20.7.0",
     "tailwindcss": "^4.3.1",
     "typescript": "^5.9.3",
-    "vite": "^8.1.0",
-    "vitest": "^4.0.18",
+    "vite": "^8.3.5",
+    "vitest": "^4.1.12",
     "vue-tsc": "^3.3.5"
   }
 }
